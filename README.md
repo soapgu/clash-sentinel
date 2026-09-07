@@ -33,7 +33,7 @@ Clash Sentinel 是面向 macOS 与 Clash Verge Rev / Mihomo 的本机连接健�
 2. **手动管理闭环**：实现诊断、切换、解除锁定和回滚操作。
 3. **自动恢复闭环**：实现故障阈值、自动切换、冷却保护及登录自启动。
 
-完整功能规划和验收标准见 [PROJECT_PLAN.md](PROJECT_PLAN.md)。
+完整功能规划和验收标准见 [PROJECT_PLAN.md](PROJECT_PLAN.md)，具体开发顺序和阶段检查清单见 [STEP.md](STEP.md)。
 
 ## 基线项目
 
