@@ -6,6 +6,12 @@ import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { healthResponseSchema } from '@clash-sentinel/shared';
 
+/**
+ * 创建 Clash Sentinel 的 Koa 应用，并注册健康接口、API 兜底和可选静态资源托管。
+ *
+ * @param staticRoot 生产前端构建产物目录；省略时仅提供 API。
+ * @returns 尚未开始监听端口的 Koa 应用实例。
+ */
 export function createApp(staticRoot?: string) {
   const app = new Koa();
   app.use(async (ctx, next) => {

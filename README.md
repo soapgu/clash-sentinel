@@ -2,7 +2,7 @@
 
 Clash Sentinel 是面向 macOS 与 Clash Verge Rev / Mihomo 的本机连接健康监测和入口 IP 自动恢复服务。
 
-> 当前状态：工程骨架阶段。已提供 Koa 健康接口和 React 占位页面；Clash 管理、网络检测与自动切换尚未实现。
+> 当前状态：工程骨架与 Legacy 适配层已完成。已提供 Koa 健康接口、React 占位页面，以及内部可调用的 Clash 状态、诊断、健康检查、锁定、解除锁定和回滚能力；业务 API、持续监测与自动切换尚未实现。
 
 ## 安装与运行
 
@@ -31,7 +31,12 @@ npm start
 - `apps/server`：Koa 应用与独立启动入口。
 - `apps/web`：React + Vite、React Router 和 TanStack Query。
 - `packages/shared`：共享健康响应 Schema 和 TypeScript 类型。
-- `scripts/legacy`：Step 3 的脚本适配预留目录。
+- `scripts/legacy`：固定来源版本的 Clash Shell 能力，由服务端类型化适配层调用。
+
+Legacy 适配层使用参数数组启动脚本，不经过 Shell 拼接；为不同操作设置独立超时，
+超时后终止整个进程组。诊断报告、健康状态和控制台结果会转换为共享领域类型，
+排障输出在写入 `logs/legacy` 前会脱敏。该能力当前仅供后台内部调用，不提供业务
+HTTP 接口。
 
 ```bash
 npm run format:check

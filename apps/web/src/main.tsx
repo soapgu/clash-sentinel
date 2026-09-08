@@ -8,7 +8,15 @@ import {
 } from '@tanstack/react-query';
 import { healthResponseSchema } from '@clash-sentinel/shared';
 import './style.css';
+
+/** 全站共享的服务端状态查询客户端。 */
 const client = new QueryClient();
+
+/**
+ * 渲染服务连接状态占位页，并通过同源健康接口查询后台是否可达。
+ *
+ * @returns 首页 React 元素。
+ */
 function Home() {
   const query = useQuery({
     queryKey: ['health'],
