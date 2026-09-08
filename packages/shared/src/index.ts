@@ -163,22 +163,34 @@ export const healthStatusSchema = z.enum([
 /** 服务持久化和页面展示使用的综合健康状态。 */
 export type HealthStatus = z.infer<typeof healthStatusSchema>;
 
+/** 设置持久化和 API 更新共同使用的可编辑字段定义。 */
+const settingsEditableShape = {
+  checkIntervalMs: z.number().int().min(1_000).max(86_400_000),
+  requestTimeoutMs: z.number().int().min(100).max(60_000),
+  entryFailureThreshold: z.number().int().min(1).max(100),
+  autoSwitchCooldownMs: z.number().int().min(0).max(86_400_000),
+  monitoringEnabled: z.boolean(),
+  autoSwitchEnabled: z.boolean(),
+  autoSwitchProfileUid: z.string().min(1).nullable(),
+};
+
+/** 判断设置是否满足自动切换必须绑定订阅的业务约束。 */
+function hasAutoSwitchProfile(value: {
+  autoSwitchEnabled: boolean;
+  autoSwitchProfileUid: string | null;
+}) {
+  return !value.autoSwitchEnabled || value.autoSwitchProfileUid !== null;
+}
+
 /** 校验用户可调整监测与自动切换策略的共享 Schema。 */
 export const settingsSchema = z
   .object({
-    checkIntervalMs: z.number().int().min(1_000).max(86_400_000),
-    requestTimeoutMs: z.number().int().min(100).max(60_000),
-    entryFailureThreshold: z.number().int().min(1).max(100),
-    autoSwitchCooldownMs: z.number().int().min(0).max(86_400_000),
-    monitoringEnabled: z.boolean(),
-    autoSwitchEnabled: z.boolean(),
-    autoSwitchProfileUid: z.string().min(1).nullable(),
+    ...settingsEditableShape,
     updatedAt: z.string().datetime(),
   })
-  .refine(
-    (value) => !value.autoSwitchEnabled || value.autoSwitchProfileUid !== null,
-    { message: '启用自动切换时必须绑定订阅 UID' },
-  );
+  .refine(hasAutoSwitchProfile, {
+    message: '启用自动切换时必须绑定订阅 UID',
+  });
 /** 用户监测和自动切换策略。 */
 export type Settings = z.infer<typeof settingsSchema>;
 
@@ -381,3 +393,153 @@ export const eventRecordSchema = z.object({
 });
 /** 按普通或关键策略保留的服务事件记录。 */
 export type EventRecord = z.infer<typeof eventRecordSchema>;
+
+/** 校验 API 向客户端公开的稳定错误码。 */
+export const apiErrorCodeSchema = z.enum([
+  'INVALID_JSON',
+  'VALIDATION_ERROR',
+  'NOT_FOUND',
+  'ACTION_CONFLICT',
+  'NO_DIAGNOSIS',
+  'INVALID_CANDIDATE',
+  'AUTO_SWITCH_REQUIRES_LOCK',
+  'PROFILE_MISMATCH',
+  'REQUEST_TIMEOUT',
+  'INTERNAL_ERROR',
+]);
+/** API 请求校验、业务拒绝和内部失败的稳定错误码。 */
+export type ApiErrorCode = z.infer<typeof apiErrorCodeSchema>;
+
+/** 校验不包含输入原文的 API 错误详情。 */
+export const apiErrorDetailsSchema = z
+  .object({
+    issues: z.array(z.string()).optional(),
+    activeTaskId: z.string().uuid().optional(),
+  })
+  .strict();
+/** API 错误可选的脱敏结构化上下文。 */
+export type ApiErrorDetails = z.infer<typeof apiErrorDetailsSchema>;
+
+/** 校验统一 API 失败响应。 */
+export const apiErrorResponseSchema = z.object({
+  ok: z.literal(false),
+  error: z.object({
+    code: apiErrorCodeSchema,
+    message: z.string().min(1),
+    details: apiErrorDetailsSchema.optional(),
+  }),
+  requestId: z.string().uuid(),
+});
+/** 统一 API 失败响应。 */
+export type ApiErrorResponse = z.infer<typeof apiErrorResponseSchema>;
+
+/** 校验当前健康快照读取响应。 */
+export const statusResponseSchema = z.object({
+  ok: z.literal(true),
+  data: z.object({ snapshot: healthSnapshotSchema.nullable() }),
+});
+/** 当前健康快照读取响应。 */
+export type StatusResponse = z.infer<typeof statusResponseSchema>;
+
+/** 校验六个固定站点的当前结果映射。 */
+export const siteSnapshotMapSchema = z.object({
+  baidu: siteResultSchema.nullable(),
+  taobao: siteResultSchema.nullable(),
+  tencent: siteResultSchema.nullable(),
+  google: siteResultSchema.nullable(),
+  github: siteResultSchema.nullable(),
+  openai_status: siteResultSchema.nullable(),
+});
+/** 六个固定站点的当前结果映射。 */
+export type SiteSnapshotMap = z.infer<typeof siteSnapshotMapSchema>;
+
+/** 校验站点当前结果读取响应。 */
+export const sitesResponseSchema = z.object({
+  ok: z.literal(true),
+  data: z.object({ sites: siteSnapshotMapSchema }),
+});
+/** 站点当前结果读取响应。 */
+export type SitesResponse = z.infer<typeof sitesResponseSchema>;
+
+/** 校验最近诊断及候选读取响应。 */
+export const candidatesResponseSchema = z.object({
+  ok: z.literal(true),
+  data: z.object({ diagnosis: storedDiagnosisSchema.nullable() }),
+});
+/** 最近诊断及候选读取响应。 */
+export type CandidatesResponse = z.infer<typeof candidatesResponseSchema>;
+
+/** 校验事件分页查询并将十进制文本转换为整数。 */
+export const eventsQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    offset: z.coerce.number().int().nonnegative().default(0),
+  })
+  .strict();
+/** 事件分页查询参数。 */
+export type EventsQuery = z.infer<typeof eventsQuerySchema>;
+
+/** 校验事件分页读取响应。 */
+export const eventsResponseSchema = z.object({
+  ok: z.literal(true),
+  data: z.object({
+    items: z.array(eventRecordSchema),
+    limit: z.number().int().min(1).max(100),
+    offset: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+  }),
+});
+/** 事件分页读取响应。 */
+export type EventsResponse = z.infer<typeof eventsResponseSchema>;
+
+/** 校验策略读取响应。 */
+export const settingsResponseSchema = z.object({
+  ok: z.literal(true),
+  data: z.object({ settings: settingsSchema }),
+});
+/** 策略读取响应。 */
+export type SettingsResponse = z.infer<typeof settingsResponseSchema>;
+
+/** 校验客户端提交的完整可编辑策略。 */
+export const settingsUpdateSchema = z
+  .object(settingsEditableShape)
+  .strict()
+  .refine(hasAutoSwitchProfile, {
+    message: '启用自动切换时必须绑定订阅 UID',
+  });
+/** 客户端提交的完整可编辑策略。 */
+export type SettingsUpdate = z.infer<typeof settingsUpdateSchema>;
+
+/** 校验单个任务读取响应。 */
+export const taskResponseSchema = z.object({
+  ok: z.literal(true),
+  data: z.object({ task: storedTaskSchema }),
+});
+/** 单个任务读取响应。 */
+export type TaskResponse = z.infer<typeof taskResponseSchema>;
+
+/** 校验任务 UUID 路径参数。 */
+export const taskParamsSchema = z.object({ id: z.string().uuid() }).strict();
+/** 任务 UUID 路径参数。 */
+export type TaskParams = z.infer<typeof taskParamsSchema>;
+
+/** 校验不接受任何业务字段的动作请求。 */
+export const emptyActionRequestSchema = z.object({}).strict();
+/** 无业务字段的动作请求。 */
+export type EmptyActionRequest = z.infer<typeof emptyActionRequestSchema>;
+
+/** 校验应用候选 IPv4 的动作请求。 */
+export const applyActionRequestSchema = z.object({ ip: ipv4Schema }).strict();
+/** 应用候选 IPv4 的动作请求。 */
+export type ApplyActionRequest = z.infer<typeof applyActionRequestSchema>;
+
+/** 校验后台动作成功入队响应。 */
+export const taskAcceptedResponseSchema = z.object({
+  ok: z.literal(true),
+  data: z.object({
+    taskId: z.string().uuid(),
+    status: z.literal('queued'),
+  }),
+});
+/** 后台动作成功入队响应。 */
+export type TaskAcceptedResponse = z.infer<typeof taskAcceptedResponseSchema>;

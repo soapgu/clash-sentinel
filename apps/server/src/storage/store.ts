@@ -701,6 +701,18 @@ export class SqliteStore {
     ).map((row) => this.mapEvent(row));
   }
 
+  /**
+   * 读取全部事件数量，用于 API 的 limit/offset 分页元数据。
+   *
+   * @returns 当前事件总数。
+   */
+  countEvents(): number {
+    const row = this.database
+      .prepare('SELECT COUNT(*) AS count FROM events')
+      .get() as { count: number };
+    return row.count;
+  }
+
   /** 对站点历史和两类事件执行显式批量数量清理。 */
   pruneHistory() {
     this.database.transaction(() => {
