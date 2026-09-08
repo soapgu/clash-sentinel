@@ -2,7 +2,7 @@
 
 Clash Sentinel 是面向 macOS 与 Clash Verge Rev / Mihomo 的本机连接健康监测和入口 IP 自动恢复服务。
 
-> 当前状态：工程骨架与 Legacy 适配层已完成。已提供 Koa 健康接口、React 占位页面，以及内部可调用的 Clash 状态、诊断、健康检查、锁定、解除锁定和回滚能力；业务 API、持续监测与自动切换尚未实现。
+> 当前状态：工程骨架、Legacy 适配层和本地 SQLite 存储层已完成。已提供 Koa 健康接口、React 占位页面，以及内部可调用的 Clash 状态、诊断、健康检查、锁定、解除锁定、回滚和持久化能力；业务 API、持续监测与自动切换尚未实现。
 
 ## 安装与运行
 
@@ -30,13 +30,22 @@ npm start
 
 - `apps/server`：Koa 应用与独立启动入口。
 - `apps/web`：React + Vite、React Router 和 TanStack Query。
-- `packages/shared`：共享健康响应 Schema 和 TypeScript 类型。
+- `packages/shared`：共享健康、策略、站点、诊断、任务和事件 Schema 与 TypeScript 类型。
 - `scripts/legacy`：固定来源版本的 Clash Shell 能力，由服务端类型化适配层调用。
 
 Legacy 适配层使用参数数组启动脚本，不经过 Shell 拼接；为不同操作设置独立超时，
 超时后终止整个进程组。诊断报告、健康状态和控制台结果会转换为共享领域类型，
 排障输出在写入 `logs/legacy` 前会脱敏。该能力当前仅供后台内部调用，不提供业务
 HTTP 接口。
+
+本地存储使用同步、事务化的 SQLite，默认数据库位于当前工作目录的
+`.state/clash-sentinel.db`。可以通过 `CLASH_SENTINEL_DB_PATH` 环境变量或
+`SqliteStore` 构造参数覆盖路径；测试始终使用独立临时数据库。启动时会执行版本化迁移，
+并将上次进程遗留的运行中任务标记为“服务重启中断”，不会自动重放配置修改。
+数据库保存策略、当前快照、站点历史、最近诊断候选、任务和事件，不保存 Legacy 原始报告、
+完整订阅正文、Mihomo 密钥或非必要本机路径。站点历史及普通、关键事件分别按数量上限清理，
+当前快照和最近诊断不参与历史清理。
+完整表结构、关系、事务和安全规则见[数据库设计文档](docs/database-design.md)。
 
 ```bash
 npm run format:check
