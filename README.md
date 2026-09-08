@@ -2,7 +2,49 @@
 
 Clash Sentinel 是面向 macOS 与 Clash Verge Rev / Mihomo 的本机连接健康监测和入口 IP 自动恢复服务。
 
-> 当前状态：规划阶段，暂未提供可安装或运行的版本。
+> 当前状态：工程骨架阶段。已提供 Koa 健康接口和 React 占位页面；Clash 管理、网络检测与自动切换尚未实现。
+
+## 安装与运行
+
+使用 Node.js 24 LTS 和 npm。项目通过 `.nvmrc` 与 `.node-version` 标识 Node 主版本，CI 同样使用 Node.js 24。
+
+```bash
+npm ci
+npm run dev
+```
+
+开发页面：[http://127.0.0.1:5173](http://127.0.0.1:5173)。Koa API 监听 `127.0.0.1:3000`，Vite 转发 `/api` 请求。开发命令先构建共享包，再启动共享包监听、后台与前端；按 `Ctrl+C` 停止全部开发进程。
+
+生产构建与运行：
+
+```bash
+npm run build
+npm start
+```
+
+打开 [http://127.0.0.1:3000](http://127.0.0.1:3000)，页面与 API 均由 Koa 提供。端口占用会报错退出，不自动更换端口。按 `Ctrl+C` 停止服务。
+
+`GET /api/health` 仅确认后台进程可以响应，不代表 Clash 或互联网健康。占位页通过真实请求显示后台连接结果。
+
+## 工程与检查
+
+- `apps/server`：Koa 应用与独立启动入口。
+- `apps/web`：React + Vite、React Router 和 TanStack Query。
+- `packages/shared`：共享健康响应 Schema 和 TypeScript 类型。
+- `scripts/legacy`：Step 3 的脚本适配预留目录。
+
+```bash
+npm run format:check
+npm run lint
+npm run typecheck
+npm test
+npx playwright install chromium
+npm run test:e2e
+```
+
+`npm run test:e2e` 会构建并启动生产服务，要求端口 3000 空闲。`npm run format` 用于格式化新增工程文件，已验收的设计文档和图稿排除在格式化范围之外。
+
+GitHub Actions 在 push 和 pull request 时使用 macOS runner 执行上述检查，失败时保存 Playwright 报告与追踪文件。本阶段未配置自动发布或部署。
 
 ## 核心能力
 
