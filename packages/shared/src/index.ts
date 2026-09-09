@@ -415,6 +415,7 @@ export const apiErrorDetailsSchema = z
   .object({
     issues: z.array(z.string()).optional(),
     activeTaskId: z.string().uuid().optional(),
+    activeOperation: z.literal('scheduled_health').optional(),
   })
   .strict();
 /** API 错误可选的脱敏结构化上下文。 */
@@ -441,14 +442,21 @@ export const statusResponseSchema = z.object({
 /** 当前健康快照读取响应。 */
 export type StatusResponse = z.infer<typeof statusResponseSchema>;
 
+/** 校验 API 展示的站点结果及动态过期标记。 */
+export const siteSnapshotViewSchema = siteResultSchema.extend({
+  stale: z.boolean(),
+});
+/** API 展示的站点当前结果。 */
+export type SiteSnapshotView = z.infer<typeof siteSnapshotViewSchema>;
+
 /** 校验六个固定站点的当前结果映射。 */
 export const siteSnapshotMapSchema = z.object({
-  baidu: siteResultSchema.nullable(),
-  taobao: siteResultSchema.nullable(),
-  tencent: siteResultSchema.nullable(),
-  google: siteResultSchema.nullable(),
-  github: siteResultSchema.nullable(),
-  openai_status: siteResultSchema.nullable(),
+  baidu: siteSnapshotViewSchema.nullable(),
+  taobao: siteSnapshotViewSchema.nullable(),
+  tencent: siteSnapshotViewSchema.nullable(),
+  google: siteSnapshotViewSchema.nullable(),
+  github: siteSnapshotViewSchema.nullable(),
+  openai_status: siteSnapshotViewSchema.nullable(),
 });
 /** 六个固定站点的当前结果映射。 */
 export type SiteSnapshotMap = z.infer<typeof siteSnapshotMapSchema>;

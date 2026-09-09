@@ -40,6 +40,22 @@
 }
 ```
 
+定时健康检测占用全局槽时没有数据库任务 ID，冲突详情改为活动操作：
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "ACTION_CONFLICT",
+    "message": "定时健康检测正在执行",
+    "details": {
+      "activeOperation": "scheduled_health"
+    }
+  },
+  "requestId": "a26af7b6-7df5-4658-9c5c-f39162de408c"
+}
+```
+
 失败响应：
 
 ```json
@@ -54,7 +70,7 @@
 }
 ```
 
-`details` 只包含字段路径、当前任务 ID 等脱敏上下文，不返回输入原文、堆栈、本机路径、配置或密钥。
+`details` 只包含字段路径、当前任务 ID 或固定活动操作等脱敏上下文，不返回输入原文、堆栈、本机路径、配置或密钥。
 
 ## 2. HTTP 状态与错误码
 
@@ -144,7 +160,8 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
         "errorType": null,
         "checkedAt": "2026-09-08T04:05:00.000Z",
         "serviceStatus": null,
-        "incidentSummary": null
+        "incidentSummary": null,
+        "stale": false
       },
       "taobao": {
         "target": "taobao",
@@ -154,7 +171,8 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
         "errorType": null,
         "checkedAt": "2026-09-08T04:05:01.000Z",
         "serviceStatus": null,
-        "incidentSummary": null
+        "incidentSummary": null,
+        "stale": false
       },
       "tencent": null,
       "google": {
@@ -165,7 +183,8 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
         "errorType": "timeout",
         "checkedAt": "2026-09-08T04:05:02.000Z",
         "serviceStatus": null,
-        "incidentSummary": null
+        "incidentSummary": null,
+        "stale": false
       },
       "github": {
         "target": "github",
@@ -175,7 +194,8 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
         "errorType": null,
         "checkedAt": "2026-09-08T04:05:03.000Z",
         "serviceStatus": null,
-        "incidentSummary": null
+        "incidentSummary": null,
+        "stale": false
       },
       "openai_status": {
         "target": "openai_status",
@@ -185,14 +205,15 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
         "errorType": null,
         "checkedAt": "2026-09-08T04:05:04.000Z",
         "serviceStatus": "degraded",
-        "incidentSummary": "示例 API 服务响应延迟升高"
+        "incidentSummary": "示例 API 服务响应延迟升高",
+        "stale": false
       }
     }
   }
 }
 ```
 
-尚未检测的目标使用 `null`；即使部分目标没有结果，六个键也不会省略。
+尚未检测的目标使用 `null`；即使部分目标没有结果，六个键也不会省略。`stale` 不写入数据库，而是在读取时以 `checkedAt` 是否早于当前时间两个检测周期动态计算。
 
 ### 3.4 `GET /api/candidates`
 
@@ -505,7 +526,7 @@ stateDiagram-v2
 
 ### 5.2 `POST /api/actions/health-check`
 
-请求体必须为 `{}`。后台执行 `healthCheck()`，再执行只读 `getStatus()` 补齐订阅和锁定信息，保存健康快照并记录普通事件。保留已有冷却截止时间。
+请求体必须为 `{}`。后台执行与定时监测相同的完整六站检测；国内至少两个站点成功且入口已锁定时，再执行 Legacy `healthCheck()`，补齐订阅、入口和连续失败信息，保存站点历史及健康快照。保留已有冷却截止时间。
 
 ```json
 {}
@@ -690,7 +711,8 @@ API 入队前要求 IP 是严格 IPv4，最近诊断状态为 `testable`，且�
 ```mermaid
 flowchart TD
     A[收到动作请求] --> B{是否有活动任务}
-    B -->|有| C[409 ACTION_CONFLICT + activeTaskId]
+    B -->|手动任务| C[409 + activeTaskId]
+    B -->|定时检测| H[409 + activeOperation]
     B -->|无| D[创建 queued 任务并占用动作槽]
     D --> E[返回 202]
     E --> F[后台执行并落盘]
@@ -699,21 +721,31 @@ flowchart TD
 
 双击或并发提交只有第一个请求可以入队。动作完成后的重复 apply 由 Legacy 返回 `no_change`；重复 reset 或 rollback 由锁定及备份上下文拒绝，不能重复修改配置。
 
-## 6. 运行路径与生命周期
+## 6. 定时健康检测
+
+- 服务监听成功后立即尝试首轮检测，此后在上一轮完成后按最新 `checkIntervalMs` 安排下一轮。
+- `monitoringEnabled=false` 时不发出检测请求，但继续按设置周期复查开关。
+- 定时轮次与手动动作共用全局槽；手动任务运行时静默跳过定时轮次，定时检测运行时手动动作返回 `409`。
+- 定时轮次不创建 `StoredTask`，只更新六站历史、当前快照、综合健康快照，并在综合状态变化或整轮失败时记录普通事件。
+- 百度、淘宝、腾讯显式绕过代理；Google、GitHub 和 OpenAI 状态经 Clash 本机代理访问。国内只有一个成功时不评价入口，全部失败时判为断网。
+- 站点超过两个检测周期未更新时，`GET /api/sites` 动态返回 `stale: true`。
+
+## 7. 运行路径与生命周期
 
 | 用途 | 环境变量 | 默认值 |
 | --- | --- | --- |
 | Legacy 脚本 | `CLASH_SENTINEL_LEGACY_SCRIPT_PATH` | `<cwd>/scripts/legacy/clash-entry-ip.sh` |
 | Clash 配置根目录 | `CLASH_APP_DIR` | `~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev` |
+| Clash 运行配置 | `CLASH_RUNTIME_CONFIG` | `<Clash目录>/clash-verge.yaml` |
 | Legacy 状态 | `CLASH_ENTRY_STATE_DIR` | `<cwd>/.state/legacy` |
 | 诊断报告 | `CLASH_ENTRY_REPORT_DIR` | `<cwd>/reports/legacy` |
 | 配置备份 | `CLASH_ENTRY_BACKUP_DIR` | `<Clash目录>/entry-ip-backups` |
 | Legacy 日志 | `CLASH_SENTINEL_LEGACY_LOG_DIR` | `<cwd>/logs/legacy` |
 | SQLite | `CLASH_SENTINEL_DB_PATH` | `<cwd>/.state/clash-sentinel.db` |
 
-收到 `SIGINT` 或 `SIGTERM` 后停止接收 HTTP 和新任务，等待当前 Legacy 动作结束，再关闭 SQLite。监听失败也必须关闭数据库。
+收到 `SIGINT` 或 `SIGTERM` 后停止调度、HTTP 和新任务，等待当前手动或定时检测结束，关闭 HTTP 连接池，再关闭 SQLite。监听失败也必须关闭数据库。
 
-## 7. 安全边界
+## 8. 安全边界
 
 - API 没有任何路径、命令名、环境变量或任意参数数组字段。
 - apply 的唯一 Shell 参数来自严格 IPv4 Schema 和当前诊断候选，仍以参数数组、`shell: false` 执行。

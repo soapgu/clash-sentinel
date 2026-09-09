@@ -1,5 +1,6 @@
 import type {
   HealthSnapshot,
+  ApiErrorDetails,
   StoredJsonObject,
   StoredTask,
   TaskType,
@@ -7,6 +8,11 @@ import type {
 import { LegacyAdapterError, type LegacyAdapter } from '../legacy/adapter.js';
 import type { SqliteStore } from '../storage/store.js';
 import { ApiError } from '../api/errors.js';
+import type { HealthCheckService } from './health/health-check.js';
+import type {
+  OperationCoordinator,
+  OperationLease,
+} from './operation-coordinator.js';
 
 /** Step 5 允许通过 API 启动的 Legacy 动作。 */
 export type ApiActionType = Exclude<TaskType, 'auto_switch'>;
@@ -15,6 +21,7 @@ export type ApiActionType = Exclude<TaskType, 'auto_switch'>;
 export type LegacyOperations = Pick<
   LegacyAdapter,
   | 'getStatus'
+  | 'readLatestDiagnosis'
   | 'diagnose'
   | 'healthCheck'
   | 'applyIp'
@@ -28,13 +35,18 @@ export interface TaskServiceOptions {
   store: SqliteStore;
   /** 执行固定 Legacy Shell 命令的适配器。 */
   adapter: LegacyOperations;
+  /** 手动和定时检测共用的完整健康编排器。 */
+  healthCheck: Pick<HealthCheckService, 'run'>;
+  /** 手动任务与定时健康检测共享的全局执行槽。 */
+  coordinator: OperationCoordinator;
 }
 
 /** 串行执行 API 发起的 Legacy 动作并持久化完整生命周期。 */
 export class TaskService {
   private readonly store: SqliteStore;
   private readonly adapter: LegacyOperations;
-  private activeTaskId: string | null = null;
+  private readonly healthCheck: Pick<HealthCheckService, 'run'>;
+  private readonly coordinator: OperationCoordinator;
   private activeCompletion: Promise<void> | null = null;
   private accepting = true;
 
@@ -42,16 +54,24 @@ export class TaskService {
   constructor(options: TaskServiceOptions) {
     this.store = options.store;
     this.adapter = options.adapter;
+    this.healthCheck = options.healthCheck;
+    this.coordinator = options.coordinator;
   }
 
   /** @returns 当前活动任务 UUID；空闲时返回 null。 */
   getActiveTaskId() {
-    return this.activeTaskId;
+    const active = this.coordinator.getActive();
+    return active?.kind === 'manual_task' ? active.taskId : null;
   }
 
-  /** @returns 当前是否有动作正在排队或执行。 */
-  hasActiveTask() {
-    return this.activeTaskId !== null;
+  /** @returns 当前是否有手动动作或定时检测正在执行。 */
+  hasActiveOperation() {
+    return this.coordinator.getActive() !== null;
+  }
+
+  /** @returns 当前动作冲突可向 API 公开的脱敏详情。 */
+  getConflictDetails(): ApiErrorDetails | undefined {
+    return this.coordinator.getConflictDetails();
   }
 
   /**
@@ -66,15 +86,13 @@ export class TaskService {
     type: ApiActionType,
     input: StoredJsonObject | null = null,
   ): StoredTask {
-    if (!this.accepting || this.activeTaskId)
-      throw new ApiError(409, 'ACTION_CONFLICT', '已有操作正在执行', {
-        ...(this.activeTaskId
-          ? { activeTaskId: this.activeTaskId }
-          : undefined),
-      });
+    if (!this.accepting || this.coordinator.getActive()) this.throwConflict();
     const task = this.store.createTask(type, input);
-    this.activeTaskId = task.id;
-    this.activeCompletion = Promise.resolve().then(() => this.execute(task));
+    const lease = this.coordinator.tryAcquireManual(task.id);
+    if (!lease) this.throwConflict();
+    this.activeCompletion = Promise.resolve().then(() =>
+      this.execute(task, lease),
+    );
     return task;
   }
 
@@ -89,7 +107,7 @@ export class TaskService {
   }
 
   /** 执行动作、持久化领域结果并最终释放全局槽。 */
-  private async execute(task: StoredTask) {
+  private async execute(task: StoredTask, lease: OperationLease) {
     try {
       this.store.startTask(task.id);
       const result = await this.executeAction(task);
@@ -109,10 +127,8 @@ export class TaskService {
       }
       this.appendEventSafely(task, false, code);
     } finally {
-      if (this.activeTaskId === task.id) {
-        this.activeTaskId = null;
-        this.activeCompletion = null;
-      }
+      lease.release();
+      this.activeCompletion = null;
     }
   }
 
@@ -120,22 +136,7 @@ export class TaskService {
   private async executeAction(task: StoredTask): Promise<StoredJsonObject> {
     switch (task.type) {
       case 'health_check': {
-        const health = await this.adapter.healthCheck();
-        const status = await this.adapter.getStatus();
-        return this.asJson(
-          this.store.upsertHealthSnapshot({
-            status: health.status,
-            profile: status.profile,
-            lock: status.lock,
-            internetSuccess: health.internetSuccess,
-            internetTotal: health.internetTotal,
-            consecutiveFailures: health.consecutiveFailures,
-            recommendedIp: health.recommendedIp,
-            autoSwitchCooldownUntil:
-              this.store.getHealthSnapshot()?.autoSwitchCooldownUntil ?? null,
-            updatedAt: this.normalizeTime(health.checkedAt),
-          }),
-        );
+        return this.asJson(await this.healthCheck.run('manual'));
       }
       case 'diagnose':
         return this.asJson(
@@ -186,13 +187,6 @@ export class TaskService {
     this.store.upsertHealthSnapshot(snapshot);
   }
 
-  /** 将 Legacy 日期文本规范化为健康快照要求的 ISO 8601。 */
-  private normalizeTime(value: string) {
-    const parsed = Date.parse(value);
-    if (!Number.isFinite(parsed)) throw new Error('健康检查时间无效');
-    return new Date(parsed).toISOString();
-  }
-
   /** 追加任务结果事件，事件失败不篡改已经落盘的任务终态。 */
   private appendEventSafely(
     task: StoredTask,
@@ -232,5 +226,18 @@ export class TaskService {
   /** 将已由共享 Schema 约束的领域对象转换为存储扩展 JSON。 */
   private asJson(value: object): StoredJsonObject {
     return value as StoredJsonObject;
+  }
+
+  /** 抛出不包含本机状态细节的统一动作冲突。 */
+  private throwConflict(): never {
+    const active = this.coordinator.getActive();
+    throw new ApiError(
+      409,
+      'ACTION_CONFLICT',
+      active?.kind === 'scheduled_health'
+        ? '定时健康检测正在执行'
+        : '已有操作正在执行',
+      this.coordinator.getConflictDetails(),
+    );
   }
 }

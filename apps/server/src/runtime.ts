@@ -1,6 +1,11 @@
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { LegacyAdapter } from './legacy/adapter.js';
+import { ClashProxyConfig } from './services/health/proxy-config.js';
+import { HealthCheckService } from './services/health/health-check.js';
+import { HealthScheduler } from './services/health/health-scheduler.js';
+import { UndiciSiteProbe } from './services/health/site-probe.js';
+import { OperationCoordinator } from './services/operation-coordinator.js';
 import { TaskService } from './services/task-service.js';
 import { SqliteStore } from './storage/store.js';
 
@@ -10,6 +15,10 @@ export interface RuntimeDependencies {
   store: SqliteStore;
   /** 串行异步任务服务。 */
   taskService: TaskService;
+  /** 启动即运行且可安全停止的健康调度器。 */
+  scheduler: HealthScheduler;
+  /** 关闭时需要释放连接池的 HTTP 探测器。 */
+  siteProbe: UndiciSiteProbe;
 }
 
 /**
@@ -49,5 +58,26 @@ export function createRuntimeDependencies(
       environment.CLASH_SENTINEL_LEGACY_LOG_DIR || resolve(cwd, 'logs/legacy'),
     environment,
   });
-  return { store, taskService: new TaskService({ store, adapter }) };
+  const coordinator = new OperationCoordinator();
+  const siteProbe = new UndiciSiteProbe();
+  const runtimeConfigPath =
+    environment.CLASH_RUNTIME_CONFIG || resolve(appDir, 'clash-verge.yaml');
+  const healthCheck = new HealthCheckService({
+    store,
+    siteProbe,
+    proxyConfig: new ClashProxyConfig(runtimeConfigPath),
+    legacy: adapter,
+  });
+  const taskService = new TaskService({
+    store,
+    adapter,
+    healthCheck,
+    coordinator,
+  });
+  return {
+    store,
+    taskService,
+    scheduler: new HealthScheduler({ store, coordinator, healthCheck }),
+    siteProbe,
+  };
 }

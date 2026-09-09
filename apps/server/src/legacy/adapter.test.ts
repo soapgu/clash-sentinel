@@ -187,6 +187,7 @@ describe('LegacyAdapter', () => {
       recommendedIp: '198.51.100.20',
     });
     expect(diagnosis.candidates).toHaveLength(2);
+    await expect(adapter.readLatestDiagnosis()).resolves.toEqual(diagnosis);
 
     await expect(adapter.applyIp('198.51.100.20')).resolves.toMatchObject({
       status: 'applied',

@@ -2,7 +2,7 @@
 
 Clash Sentinel 是面向 macOS 与 Clash Verge Rev / Mihomo 的本机连接健康监测和入口 IP 自动恢复服务。
 
-> 当前状态：工程骨架、Legacy 适配层、本地 SQLite 存储层和 Koa API 骨架已完成。已提供只读状态接口、全局串行的异步 Legacy 动作接口和策略接口；持续监测、自动切换与正式 Web 页面尚未实现。
+> 当前状态：工程骨架、Legacy 适配层、本地 SQLite、Koa API 骨架和定时健康检测已完成。已提供六站探测、入口连续失败判断、只读状态接口、全局串行的异步 Legacy 动作接口和策略接口；自动切换与正式 Web 页面尚未实现。
 
 ## 安装与运行
 

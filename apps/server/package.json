@@ -12,7 +12,9 @@
     "better-sqlite3": "^13.0.3",
     "koa": "^3.0.0",
     "koa-bodyparser": "^4.4.1",
-    "koa-static": "^5.0.0"
+    "koa-static": "^5.0.0",
+    "undici": "^8.10.2",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",

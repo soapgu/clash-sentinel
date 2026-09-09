@@ -28,6 +28,8 @@ export interface ApiRouterOptions {
   store: SqliteStore;
   /** 全局串行的 Legacy 任务服务。 */
   taskService: TaskService;
+  /** 测试站点过期边界时可注入的 Unix 毫秒时钟。 */
+  now?: () => number;
 }
 
 /** 使用 Zod 校验不可信请求数据并只公开字段路径。 */
@@ -51,6 +53,7 @@ function requestBody(ctx: Context): unknown {
 /** 创建严格遵循共享 Schema 的业务 API 路由。 */
 export function createApiRouter(options: ApiRouterOptions) {
   const { store, taskService } = options;
+  const now = options.now ?? Date.now;
   const router = new Router();
 
   router.get('/api/health', (ctx) => {
@@ -68,11 +71,20 @@ export function createApiRouter(options: ApiRouterOptions) {
   });
 
   router.get('/api/sites', (ctx) => {
+    const staleAfterMs = store.getSettings().checkIntervalMs * 2;
     const sites = Object.fromEntries(
-      siteTargetSchema.options.map((target) => [
-        target,
-        store.getSiteSnapshot(target),
-      ]),
+      siteTargetSchema.options.map((target) => {
+        const result = store.getSiteSnapshot(target);
+        return [
+          target,
+          result
+            ? {
+                ...result,
+                stale: now() - Date.parse(result.checkedAt) > staleAfterMs,
+              }
+            : null,
+        ];
+      }),
     ) as SiteSnapshotMap;
     ctx.body = sitesResponseSchema.parse({ ok: true, data: { sites } });
   });
@@ -116,10 +128,9 @@ export function createApiRouter(options: ApiRouterOptions) {
       ? input
       : { ...input, autoSwitchProfileUid: null };
     if (normalized.autoSwitchEnabled) {
-      const activeTaskId = taskService.getActiveTaskId();
-      if (activeTaskId)
+      if (taskService.hasActiveOperation())
         throw new ApiError(409, 'ACTION_CONFLICT', '已有操作正在执行', {
-          activeTaskId,
+          ...taskService.getConflictDetails(),
         });
       const snapshot = store.getHealthSnapshot();
       if (!snapshot?.lock.locked)

@@ -123,6 +123,16 @@ export class LegacyAdapter {
    */
   async diagnose(): Promise<DiagnosisResult> {
     await this.run('diagnose', []);
+    return this.readLatestDiagnosis();
+  }
+
+  /**
+   * 只读取并解析 Legacy 最近诊断，不启动新的 Shell 诊断。
+   *
+   * @returns 最近候选、测试结果、推荐地址或稳定跳过原因。
+   * @throws {LegacyAdapterError} 报告缺失、读取失败或格式非法时抛出。
+   */
+  async readLatestDiagnosis(): Promise<DiagnosisResult> {
     const report = await this.readRequiredFile(
       resolve(this.options.stateDir, 'latest-report.tsv'),
       '诊断报告不存在',

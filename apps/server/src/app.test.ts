@@ -11,6 +11,7 @@ import type {
 import { createApp } from './app.js';
 import { LegacyAdapterError } from './legacy/adapter.js';
 import { TaskService, type LegacyOperations } from './services/task-service.js';
+import { OperationCoordinator } from './services/operation-coordinator.js';
 import { SqliteStore } from './storage/store.js';
 
 /** 当前测试创建且需要关闭、清理的隔离运行时。 */
@@ -79,6 +80,7 @@ async function createSetup(overrides: Partial<LegacyOperations> = {}) {
   const adapter: LegacyOperations = {
     getStatus: vi.fn(async () => legacyStatus()),
     diagnose: vi.fn(async () => diagnosis()),
+    readLatestDiagnosis: vi.fn(async () => diagnosis()),
     healthCheck: vi.fn(async () => ({
       status: 'healthy',
       checkedAt: '2026-09-08 12:00:00 +0800',
@@ -108,11 +110,34 @@ async function createSetup(overrides: Partial<LegacyOperations> = {}) {
     })),
     ...overrides,
   };
-  const taskService = new TaskService({ store, adapter });
+  const coordinator = new OperationCoordinator();
+  const healthCheck = {
+    run: vi.fn(async () =>
+      store.upsertHealthSnapshot({
+        status: 'healthy',
+        profile: legacyStatus().profile,
+        lock: legacyStatus().lock,
+        internetSuccess: 3,
+        internetTotal: 3,
+        consecutiveFailures: 0,
+        recommendedIp: null,
+        autoSwitchCooldownUntil:
+          store.getHealthSnapshot()?.autoSwitchCooldownUntil ?? null,
+        updatedAt: '2026-09-08T04:00:00.000Z',
+      }),
+    ),
+  };
+  const taskService = new TaskService({
+    store,
+    adapter,
+    healthCheck,
+    coordinator,
+  });
   setups.push({ root, store, taskService });
   return {
     store,
     adapter,
+    coordinator,
     taskService,
     app: createApp({ store, taskService, logger: () => undefined }),
   };
@@ -144,6 +169,39 @@ test('健康、空快照和固定站点接口遵守只读契约', async () => {
   expect(setup.adapter.getStatus).not.toHaveBeenCalled();
   expect(setup.store.listTasks()).toHaveLength(0);
   expect(setup.store.countEvents()).toBe(0);
+});
+
+test('站点接口动态标记过期且定时检测占槽时拒绝手动动作', async () => {
+  const setup = await createSetup();
+  setup.store.appendSiteResult({
+    target: 'baidu',
+    reachable: true,
+    httpStatus: 200,
+    durationMs: 20,
+    errorType: null,
+    checkedAt: '2026-09-09T04:00:00.000Z',
+    serviceStatus: null,
+    incidentSummary: null,
+  });
+  const boundaryApp = createApp({
+    store: setup.store,
+    taskService: setup.taskService,
+    now: () => Date.parse('2026-09-09T04:02:00.001Z'),
+    logger: () => undefined,
+  });
+  const sites = await request(boundaryApp.callback()).get('/api/sites');
+  expect(sites.body.data.sites.baidu.stale).toBe(true);
+  expect(setup.store.getSiteSnapshot('baidu')).not.toHaveProperty('stale');
+
+  const lease = setup.coordinator.tryAcquireScheduled()!;
+  const conflict = await request(setup.app.callback())
+    .post('/api/actions/diagnose')
+    .send({});
+  expect(conflict.status).toBe(409);
+  expect(conflict.body.error.details).toEqual({
+    activeOperation: 'scheduled_health',
+  });
+  lease.release();
 });
 
 test('事件分页返回 total 并拒绝未知或越界查询', async () => {

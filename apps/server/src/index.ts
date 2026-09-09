@@ -10,15 +10,17 @@ const app = createApp({
   ...runtime,
   staticRoot: fileURLToPath(new URL('../../web/dist/', import.meta.url)),
 });
-const server = app.listen(3000, '127.0.0.1', () =>
-  console.log('Clash Sentinel: http://127.0.0.1:3000'),
-);
+const server = app.listen(3000, '127.0.0.1', () => {
+  console.log('Clash Sentinel: http://127.0.0.1:3000');
+  if (process.env.NODE_ENV !== 'test') runtime.scheduler.start();
+});
 let shuttingDown = false;
 
 /** 停止接收请求，等待当前 Legacy 动作并安全关闭 SQLite。 */
 async function shutdown(exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
+  const schedulerStopped = runtime.scheduler.stop();
   runtime.taskService.stopAccepting();
   const serverClosed = new Promise<void>((resolvePromise) => {
     if (!server.listening) {
@@ -28,7 +30,12 @@ async function shutdown(exitCode = 0) {
     server.close(() => resolvePromise());
     server.closeIdleConnections();
   });
-  await Promise.all([serverClosed, runtime.taskService.waitForIdle()]);
+  await Promise.all([
+    serverClosed,
+    schedulerStopped,
+    runtime.taskService.waitForIdle(),
+  ]);
+  await runtime.siteProbe.close();
   runtime.store.close();
   process.exitCode = exitCode;
 }
