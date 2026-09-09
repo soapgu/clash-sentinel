@@ -42,7 +42,7 @@
 
 ## Step 8 定时监测 API 契约
 
-定时监测状态已经在 [API 设计文档](../../api-design.md)的 `GET /api/monitoring` 章节冻结为 Step 8 待实现契约。正式 React 看板必须读取该接口，不得通过前端计时、设置间隔或任务表猜测调度状态。原型状态与接口字段的映射如下：
+定时监测状态已经按 [API 设计文档](../../api-design.md)的 `GET /api/monitoring` 章节完成 Step 8 实现。正式 React 看板必须读取该接口，不得通过前端计时、设置间隔或任务表猜测调度状态。原型状态与接口字段的映射如下：
 
 - “已开启、等待下一轮”对应 `enabled=true, state=waiting`。
 - “检测中”对应 `enabled=true, state=running`。

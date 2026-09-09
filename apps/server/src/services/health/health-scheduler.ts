@@ -1,3 +1,4 @@
+import type { MonitoringSnapshot } from '@clash-sentinel/shared';
 import type { SqliteStore } from '../../storage/store.js';
 import type { OperationCoordinator } from '../operation-coordinator.js';
 import type { HealthCheckService } from './health-check.js';
@@ -10,6 +11,8 @@ export interface HealthSchedulerOptions {
   coordinator: OperationCoordinator;
   /** 执行完整六站检测的编排器。 */
   healthCheck: Pick<HealthCheckService, 'run'>;
+  /** 返回当前 Unix 毫秒时间；测试可注入可控时钟。 */
+  now?: () => number;
 }
 
 /** 启动即检查、按最新设置递归调度且不会重入的健康调度器。 */
@@ -17,9 +20,38 @@ export class HealthScheduler {
   private timer: NodeJS.Timeout | null = null;
   private currentRun: Promise<void> | null = null;
   private stopped = true;
+  private lastStartedAt: string | null = null;
+  private lastCompletedAt: string | null = null;
+  /** 下一次内部调度唤醒时间；暂停时它只用于复查设置，不一定对外公开。 */
+  private nextTickAt: string | null = null;
+  private readonly now: () => number;
 
-  /** @param options 存储、全局协调器和健康编排器。 */
-  constructor(private readonly options: HealthSchedulerOptions) {}
+  /** @param options 存储、全局协调器、健康编排器和可选时钟。 */
+  constructor(private readonly options: HealthSchedulerOptions) {
+    this.now = options.now ?? Date.now;
+  }
+
+  /**
+   * 读取当前进程的定时监测运行态，不执行检测或写入存储。
+   *
+   * @returns 结合最新设置与调度器内存时间生成的新快照。
+   */
+  getSnapshot(): MonitoringSnapshot {
+    const enabled = this.options.store.getSettings().monitoringEnabled;
+    const state = this.currentRun
+      ? 'running'
+      : enabled
+        ? 'waiting'
+        : 'disabled';
+    const nextRunAt = state === 'waiting' ? this.nextTickAt : null;
+    return {
+      enabled,
+      state,
+      lastStartedAt: this.lastStartedAt,
+      lastCompletedAt: this.lastCompletedAt,
+      nextRunAt,
+    };
+  }
 
   /** 启动调度器并立即尝试第一轮检测。 */
   start(): void {
@@ -33,6 +65,7 @@ export class HealthScheduler {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    this.nextTickAt = null;
     await this.currentRun;
   }
 
@@ -49,6 +82,8 @@ export class HealthScheduler {
       this.schedule(settings.checkIntervalMs);
       return;
     }
+    this.lastStartedAt = new Date(this.now()).toISOString();
+    this.nextTickAt = null;
     this.currentRun = this.options.healthCheck
       .run('scheduled')
       .then(() => undefined)
@@ -56,6 +91,7 @@ export class HealthScheduler {
         this.appendFailureEvent();
       })
       .finally(() => {
+        this.lastCompletedAt = new Date(this.now()).toISOString();
         lease.release();
         this.currentRun = null;
         if (!this.stopped)
@@ -66,8 +102,10 @@ export class HealthScheduler {
   /** 安排下一次不早于当前轮完成后的检测。 */
   private schedule(delayMs: number): void {
     if (this.stopped) return;
+    this.nextTickAt = new Date(this.now() + delayMs).toISOString();
     this.timer = setTimeout(() => {
       this.timer = null;
+      this.nextTickAt = null;
       this.runTick();
     }, delayMs);
     this.timer.unref();

@@ -7,6 +7,7 @@ import type {
   DiagnosisResult,
   HealthSnapshot,
   LegacyStatus,
+  MonitoringSnapshot,
 } from '@clash-sentinel/shared';
 import { createApp } from './app.js';
 import { LegacyAdapterError } from './legacy/adapter.js';
@@ -133,13 +134,28 @@ async function createSetup(overrides: Partial<LegacyOperations> = {}) {
     healthCheck,
     coordinator,
   });
+  const scheduler = {
+    getSnapshot: vi.fn<() => MonitoringSnapshot>(() => ({
+      enabled: true as const,
+      state: 'waiting' as const,
+      lastStartedAt: null,
+      lastCompletedAt: null,
+      nextRunAt: null,
+    })),
+  };
   setups.push({ root, store, taskService });
   return {
     store,
     adapter,
     coordinator,
     taskService,
-    app: createApp({ store, taskService, logger: () => undefined }),
+    scheduler,
+    app: createApp({
+      store,
+      taskService,
+      scheduler,
+      logger: () => undefined,
+    }),
   };
 }
 
@@ -171,6 +187,58 @@ test('健康、空快照和固定站点接口遵守只读契约', async () => {
   expect(setup.store.countEvents()).toBe(0);
 });
 
+test('定时监测接口返回内存快照且重复读取没有副作用', async () => {
+  const setup = await createSetup();
+  const states: MonitoringSnapshot[] = [
+    {
+      enabled: true,
+      state: 'waiting',
+      lastStartedAt: null,
+      lastCompletedAt: null,
+      nextRunAt: null,
+    },
+    {
+      enabled: true,
+      state: 'waiting',
+      lastStartedAt: '2026-09-09T04:00:00.000Z',
+      lastCompletedAt: '2026-09-09T04:00:15.000Z',
+      nextRunAt: '2026-09-09T04:01:15.000Z',
+    },
+    {
+      enabled: true,
+      state: 'running',
+      lastStartedAt: '2026-09-09T04:01:15.000Z',
+      lastCompletedAt: '2026-09-09T04:00:15.000Z',
+      nextRunAt: null,
+    },
+    {
+      enabled: false,
+      state: 'running',
+      lastStartedAt: '2026-09-09T04:01:15.000Z',
+      lastCompletedAt: '2026-09-09T04:00:15.000Z',
+      nextRunAt: null,
+    },
+    {
+      enabled: false,
+      state: 'disabled',
+      lastStartedAt: '2026-09-09T04:01:15.000Z',
+      lastCompletedAt: '2026-09-09T04:01:30.000Z',
+      nextRunAt: null,
+    },
+  ];
+  for (const expected of states) {
+    setup.scheduler.getSnapshot.mockReturnValueOnce(expected);
+    expect(
+      (await request(setup.app.callback()).get('/api/monitoring')).body.data
+        .monitoring,
+    ).toEqual(expected);
+  }
+  expect(setup.scheduler.getSnapshot).toHaveBeenCalledTimes(states.length);
+  expect(setup.adapter.getStatus).not.toHaveBeenCalled();
+  expect(setup.store.listTasks()).toHaveLength(0);
+  expect(setup.store.countEvents()).toBe(0);
+});
+
 test('站点接口动态标记过期且定时检测占槽时拒绝手动动作', async () => {
   const setup = await createSetup();
   setup.store.appendSiteResult({
@@ -186,6 +254,7 @@ test('站点接口动态标记过期且定时检测占槽时拒绝手动动作',
   const boundaryApp = createApp({
     store: setup.store,
     taskService: setup.taskService,
+    scheduler: setup.scheduler,
     now: () => Date.parse('2026-09-09T04:02:00.001Z'),
     logger: () => undefined,
   });
@@ -405,6 +474,7 @@ test('非法 JSON、请求超时和内部异常不泄露原文', async () => {
   const timeoutApp = createApp({
     store: setup.store,
     taskService: setup.taskService,
+    scheduler: setup.scheduler,
     requestTimeoutMs: 5,
     logger: () => undefined,
   });

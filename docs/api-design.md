@@ -1,6 +1,6 @@
 # Clash Sentinel API 设计
 
-状态：Step 5 已实现契约，并包含 Step 8 待实现的定时监测状态契约。共享 Zod Schema、Koa 路由和测试必须与本文一致。
+状态：Step 5 和 Step 8 已实现契约。共享 Zod Schema、Koa 路由和测试必须与本文一致。
 
 依据：[项目规划](../PROJECT_PLAN.md)、[实施步骤](../STEP.md)、[数据库设计](database-design.md)。
 
@@ -437,7 +437,7 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
 
 ### 3.8 `GET /api/monitoring`
 
-> 状态：Step 8 待实现契约。
+> 状态：Step 8 已实现契约。
 
 读取当前设置和 `HealthScheduler` 在本次进程生命周期内维护的运行态。该接口没有副作用，不执行 Shell 或网络检测，也不创建任务或事件。
 
@@ -446,6 +446,8 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
 - `waiting`：定时监测已开启，当前没有定时轮次运行。
 - `running`：定时健康检测正在运行。
 - `disabled`：用户已暂停定时监测。
+
+通常 `waiting` 和 `running` 对应 `enabled=true`，`disabled` 对应 `enabled=false`。如果用户在一轮定时检测运行期间关闭监测，当前轮不会被强制中断：接口暂时返回 `enabled=false, state=running`，本轮结束并保存结果后再转为 `disabled`，且不安排后续检测。
 
 时间字段均为 ISO 8601 字符串或 `null`。`lastStartedAt` 表示最近一次定时轮次的开始时间，`lastCompletedAt` 表示最近一次定时轮次的结束时间；后者无论该轮成功还是整体失败都会更新，因此不代表检测结果健康，也不包含手动健康检测。`nextRunAt` 必须来自调度器实际安排的下一次执行时间，客户端不得根据检测间隔自行推算。
 
@@ -474,6 +476,23 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
   "data": {
     "monitoring": {
       "enabled": true,
+      "state": "running",
+      "lastStartedAt": "2026-09-09T02:27:18.000Z",
+      "lastCompletedAt": "2026-09-09T02:26:18.000Z",
+      "nextRunAt": null
+    }
+  }
+}
+```
+
+检测运行期间关闭监测时，本轮继续执行，但不会安排后续轮次：
+
+```json
+{
+  "ok": true,
+  "data": {
+    "monitoring": {
+      "enabled": false,
       "state": "running",
       "lastStartedAt": "2026-09-09T02:27:18.000Z",
       "lastCompletedAt": "2026-09-09T02:26:18.000Z",

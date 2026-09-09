@@ -442,6 +442,65 @@ export const statusResponseSchema = z.object({
 /** 当前健康快照读取响应。 */
 export type StatusResponse = z.infer<typeof statusResponseSchema>;
 
+/** 校验定时监测调度器的稳定运行状态枚举。 */
+export const monitoringRunStateSchema = z.enum([
+  'waiting',
+  'running',
+  'disabled',
+]);
+/** 当前进程中定时监测调度器的稳定运行状态。 */
+export type MonitoringRunState = z.infer<typeof monitoringRunStateSchema>;
+
+/** 校验定时监测开关、运行状态和当前进程内调度时间。 */
+export const monitoringSnapshotSchema = z
+  .object({
+    enabled: z.boolean(),
+    state: monitoringRunStateSchema,
+    lastStartedAt: z.string().datetime().nullable(),
+    lastCompletedAt: z.string().datetime().nullable(),
+    nextRunAt: z.string().datetime().nullable(),
+  })
+  .superRefine((value, context) => {
+    if (value.state === 'waiting' && !value.enabled) {
+      context.addIssue({
+        code: 'custom',
+        path: ['enabled'],
+        message: '等待状态必须启用定时监测',
+      });
+    }
+    if (value.state === 'running' && value.lastStartedAt === null) {
+      context.addIssue({
+        code: 'custom',
+        path: ['lastStartedAt'],
+        message: '运行状态必须包含本轮开始时间',
+      });
+    }
+    if (value.state === 'disabled' && value.enabled) {
+      context.addIssue({
+        code: 'custom',
+        path: ['enabled'],
+        message: '暂停状态不能启用定时监测',
+      });
+    }
+    if (value.state !== 'waiting' && value.nextRunAt !== null) {
+      context.addIssue({
+        code: 'custom',
+        path: ['nextRunAt'],
+        message: '只有等待状态可以包含下一轮计划时间',
+      });
+    }
+  });
+/** 当前进程中的定时监测开关、运行状态和调度时间。 */
+export type MonitoringSnapshot = z.infer<typeof monitoringSnapshotSchema>;
+
+/** 校验定时监测运行状态读取响应。 */
+export const monitoringResponseSchema = z.object({
+  ok: z.literal(true),
+  data: z.object({ monitoring: monitoringSnapshotSchema }),
+});
+/** 定时监测运行状态读取响应。 */
+export type MonitoringResponse = z.infer<typeof monitoringResponseSchema>;
+
 /** 校验 API 展示的站点结果及动态过期标记。 */
 export const siteSnapshotViewSchema = siteResultSchema.extend({
   stale: z.boolean(),

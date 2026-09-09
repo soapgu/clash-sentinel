@@ -8,6 +8,7 @@ import {
   eventsQuerySchema,
   eventsResponseSchema,
   healthResponseSchema,
+  monitoringResponseSchema,
   settingsResponseSchema,
   settingsUpdateSchema,
   siteTargetSchema,
@@ -18,6 +19,7 @@ import {
   taskResponseSchema,
   type SiteSnapshotMap,
 } from '@clash-sentinel/shared';
+import type { HealthScheduler } from '../services/health/health-scheduler.js';
 import type { SqliteStore } from '../storage/store.js';
 import type { TaskService } from '../services/task-service.js';
 import { ApiError } from './errors.js';
@@ -28,6 +30,8 @@ export interface ApiRouterOptions {
   store: SqliteStore;
   /** 全局串行的 Legacy 任务服务。 */
   taskService: TaskService;
+  /** 当前进程中的定时健康检测调度器。 */
+  scheduler: Pick<HealthScheduler, 'getSnapshot'>;
   /** 测试站点过期边界时可注入的 Unix 毫秒时钟。 */
   now?: () => number;
 }
@@ -52,7 +56,7 @@ function requestBody(ctx: Context): unknown {
 
 /** 创建严格遵循共享 Schema 的业务 API 路由。 */
 export function createApiRouter(options: ApiRouterOptions) {
-  const { store, taskService } = options;
+  const { store, taskService, scheduler } = options;
   const now = options.now ?? Date.now;
   const router = new Router();
 
@@ -67,6 +71,13 @@ export function createApiRouter(options: ApiRouterOptions) {
     ctx.body = statusResponseSchema.parse({
       ok: true,
       data: { snapshot: store.getHealthSnapshot() },
+    });
+  });
+
+  router.get('/api/monitoring', (ctx) => {
+    ctx.body = monitoringResponseSchema.parse({
+      ok: true,
+      data: { monitoring: scheduler.getSnapshot() },
     });
   });
 
