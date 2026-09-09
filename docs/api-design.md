@@ -1,6 +1,6 @@
 # Clash Sentinel API 设计
 
-状态：Step 5 实现契约。本文先于代码冻结；共享 Zod Schema、Koa 路由和测试必须与本文一致。
+状态：Step 5 已实现契约，并包含 Step 8 待实现的定时监测状态契约。共享 Zod Schema、Koa 路由和测试必须与本文一致。
 
 依据：[项目规划](../PROJECT_PLAN.md)、[实施步骤](../STEP.md)、[数据库设计](database-design.md)。
 
@@ -8,7 +8,7 @@
 
 - 服务仅监听 `127.0.0.1:3000`，由同源 Web 页面调用，不启用 CORS。
 - Content-Type 为 `application/json`；JSON 请求体最大 32 KiB，未知字段一律拒绝。
-- 读取接口只访问 SQLite，不启动 Shell、不执行网络检测、不创建任务或事件。
+- SQLite 业务读取接口只访问 SQLite；`GET /api/monitoring` 只读取调度器当前进程的内存运行态和当前设置。所有读取接口均不启动 Shell、不执行网络检测、不创建任务或事件。
 - API 请求处理超时为 10 秒；已返回 `202` 的后台任务使用 LegacyAdapter 自身超时。
 - 每个响应包含 `X-Request-Id`；错误响应同时在正文提供 `requestId`。
 
@@ -435,6 +435,90 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
 
 路径格式非法返回 `400 VALIDATION_ERROR`，任务不存在返回 `404 NOT_FOUND`。
 
+### 3.8 `GET /api/monitoring`
+
+> 状态：Step 8 待实现契约。
+
+读取当前设置和 `HealthScheduler` 在本次进程生命周期内维护的运行态。该接口没有副作用，不执行 Shell 或网络检测，也不创建任务或事件。
+
+`state` 只允许以下三个值：
+
+- `waiting`：定时监测已开启，当前没有定时轮次运行。
+- `running`：定时健康检测正在运行。
+- `disabled`：用户已暂停定时监测。
+
+时间字段均为 ISO 8601 字符串或 `null`。`lastStartedAt` 表示最近一次定时轮次的开始时间，`lastCompletedAt` 表示最近一次定时轮次的结束时间；后者无论该轮成功还是整体失败都会更新，因此不代表检测结果健康，也不包含手动健康检测。`nextRunAt` 必须来自调度器实际安排的下一次执行时间，客户端不得根据检测间隔自行推算。
+
+监测已开启并等待下一轮：
+
+```json
+{
+  "ok": true,
+  "data": {
+    "monitoring": {
+      "enabled": true,
+      "state": "waiting",
+      "lastStartedAt": "2026-09-09T02:26:02.000Z",
+      "lastCompletedAt": "2026-09-09T02:26:18.000Z",
+      "nextRunAt": "2026-09-09T02:27:18.000Z"
+    }
+  }
+}
+```
+
+定时检测正在运行。此时没有已安排的下一轮时间，因此 `nextRunAt` 为 `null`；`lastCompletedAt` 仍保留上一轮完成时间：
+
+```json
+{
+  "ok": true,
+  "data": {
+    "monitoring": {
+      "enabled": true,
+      "state": "running",
+      "lastStartedAt": "2026-09-09T02:27:18.000Z",
+      "lastCompletedAt": "2026-09-09T02:26:18.000Z",
+      "nextRunAt": null
+    }
+  }
+}
+```
+
+定时监测已暂停。暂停不会抹去本进程中已有的最近执行时间，但不会安排下一轮：
+
+```json
+{
+  "ok": true,
+  "data": {
+    "monitoring": {
+      "enabled": false,
+      "state": "disabled",
+      "lastStartedAt": "2026-09-09T02:26:02.000Z",
+      "lastCompletedAt": "2026-09-09T02:26:18.000Z",
+      "nextRunAt": null
+    }
+  }
+}
+```
+
+进程首次启动、首轮定时检测尚未登记时，时间可以全部为空：
+
+```json
+{
+  "ok": true,
+  "data": {
+    "monitoring": {
+      "enabled": true,
+      "state": "waiting",
+      "lastStartedAt": null,
+      "lastCompletedAt": null,
+      "nextRunAt": null
+    }
+  }
+}
+```
+
+这些运行时间只属于当前服务进程，不写入 SQLite。服务重启后重新从本次进程生命周期建立状态，不复用或伪造上一次进程的调度时间。
+
 ## 4. 设置接口
 
 ### `PUT /api/settings`
@@ -727,6 +811,7 @@ flowchart TD
 - `monitoringEnabled=false` 时不发出检测请求，但继续按设置周期复查开关。
 - 定时轮次与手动动作共用全局槽；手动任务运行时静默跳过定时轮次，定时检测运行时手动动作返回 `409`。
 - 定时轮次不创建 `StoredTask`，只更新六站历史、当前快照、综合健康快照，并在综合状态变化或整轮失败时记录普通事件。
+- Step 8 将通过 `GET /api/monitoring` 只读暴露本进程内的调度状态和实际下一次计划时间；这些运行时间不持久化。
 - 百度、淘宝、腾讯显式绕过代理；Google、GitHub 和 OpenAI 状态经 Clash 本机代理访问。国内只有一个成功时不评价入口，全部失败时判为断网。
 - 站点超过两个检测周期未更新时，`GET /api/sites` 动态返回 `stale: true`。
 
