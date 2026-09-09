@@ -340,16 +340,18 @@
 
 **交付物**：
 
-- `docs/design/high-fidelity/` 可交互原型。
-- 桌面和窄屏截图。
+- [高保真可交互原型](docs/design/high-fidelity/README.md)。
+- [桌面 1440px](docs/design/high-fidelity/screenshots/desktop.png)和[窄屏 390px](docs/design/high-fidelity/screenshots/mobile.png)截图。
 - 页面状态稿和项目实际使用的简化视觉规范。
 
 **验收条件**：
 
-- [ ] 原型使用接近真实 API 结构的示例数据。
-- [ ] 三个代理站点可以直观横向比较。
-- [ ] 危险操作不会因按钮层级或文案造成误触。
-- [ ] 高保真原型可以直接作为 React 实现和 Playwright 验收基准。
+- [x] 原型使用接近真实 API 结构的示例数据。
+- [x] 三个代理站点可以直观横向比较。
+- [x] 危险操作不会因按钮层级或文案造成误触。
+- [x] 高保真原型可以直接作为 React 实现和 Playwright 验收基准。
+
+本地验证（2026-09-09）：独立静态原型覆盖 20 个可切换场景、四类具名确认、定时监测状态条、六站本地 Logo、设置抽屉、任务阶段以及 1440px / 390px 响应式布局。当前使用候选与推荐候选具有独立视觉语义。完整示例数据通过共享 Zod Schema 校验；原型专项测试、全部单元及接口测试和 Chromium 端到端测试通过。格式、lint、类型检查、生产构建和空白检查通过；原型不连接真实 API、网络、SQLite 或 Legacy Shell，正式页面展示实时调度状态前需扩展后端只读契约。
 
 ### Step 8：实现只读 Web 看板
 

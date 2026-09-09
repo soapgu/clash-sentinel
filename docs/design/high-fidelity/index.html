@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Clash Sentinel 浅色高保真可交互原型"
+    />
+    <title>Clash Sentinel · 高保真原型</title>
+    <link rel="stylesheet" href="prototype.css" />
+    <script src="prototype.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">CS</span>
+        <div><strong>Clash Sentinel</strong><span>本机入口守护</span></div>
+      </div>
+      <div class="top-actions">
+        <span class="connection"><i></i>后台已连接</span>
+        <span class="sync-time">同步于 10:26:18</span>
+        <button class="button secondary" id="refreshButton">
+          <span aria-hidden="true">↻</span> 刷新状态
+        </button>
+        <button class="icon-button" id="settingsButton" aria-label="打开设置">
+          ⚙
+        </button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside class="scenario-bar" aria-label="原型场景切换器">
+        <div><strong>原型场景</strong><span>仅供设计审阅，不进入正式产品</span></div>
+        <label>
+          <span class="sr-only">选择展示场景</span>
+          <select id="scenarioSelect"></select>
+        </label>
+      </aside>
+
+      <section class="monitor-strip panel" id="monitorStrip" aria-labelledby="monitorTitle">
+        <div class="monitor-heading">
+          <span class="monitor-icon" aria-hidden="true">◴</span>
+          <div><span class="eyebrow">自动调度</span><h2 id="monitorTitle">定时监测</h2></div>
+        </div>
+        <div class="monitor-state"><span id="monitorBadge" class="status-pill success">● 已开启</span><strong id="monitorState">等待下一轮</strong><small id="monitorPhase">每 60 秒检测一次</small></div>
+        <div class="monitor-time"><span>上次检测</span><strong id="monitorLastTime">10:26:18</strong></div>
+        <div class="monitor-time" id="monitorNext"><span id="monitorNextLabel">预计下次</span><strong id="monitorNextTime">10:27:18</strong></div>
+        <button class="text-button monitor-settings" id="monitorSettingsButton">监测设置</button>
+      </section>
+
+      <div id="connectionBanner" class="banner danger hidden" role="alert"></div>
+      <section class="entry-card panel" aria-labelledby="entryTitle">
+        <div class="entry-main">
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">当前入口</span>
+              <h1 id="entryTitle">演示订阅 A</h1>
+            </div>
+            <span id="entryStatus" class="status-pill success">● 入口正常</span>
+          </div>
+          <div class="entry-details">
+            <div><span>入口域名</span><strong id="entryDomain">entry.example.com</strong></div>
+            <div><span>锁定 IP</span><strong id="entryIp">192.0.2.42</strong></div>
+            <div><span>连续失败</span><strong id="failureCount">0 / 3</strong></div>
+            <div><span>自动切换</span><strong id="autoSwitchState">已关闭</strong></div>
+          </div>
+        </div>
+        <div class="entry-actions">
+          <button class="button primary" id="healthButton">立即检测</button>
+          <button class="button secondary" id="diagnoseButton">重新诊断</button>
+          <div class="menu-wrap">
+            <button class="button ghost" id="moreButton" aria-expanded="false">更多操作 ···</button>
+            <div class="action-menu hidden" id="actionMenu">
+              <button data-dialog="reset">解除当前锁定</button>
+              <button data-dialog="rollback">回滚最近变更</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="taskPanel" class="task-panel panel hidden" aria-live="polite">
+        <div class="task-icon">↻</div>
+        <div class="task-copy">
+          <div><strong id="taskTitle">正在执行健康检测</strong><span id="taskStatus" class="status-pill info">运行中</span></div>
+          <p id="taskDetail">正在探测国内网络与代理站点，请稍候…</p>
+          <small id="taskId">任务 11111111-1111-4111-8111-111111111111 · 开始于 10:26:20</small>
+        </div>
+      </section>
+
+      <section aria-labelledby="internetTitle">
+        <div class="section-title-row">
+          <div><span class="eyebrow">直连基线</span><h2 id="internetTitle">国内互联网</h2></div>
+          <span id="internetSummary" class="summary-status success">3 / 3 可达 · 互联网正常</span>
+        </div>
+        <div id="domesticSites" class="mini-site-grid"></div>
+      </section>
+
+      <section aria-labelledby="proxyTitle">
+        <div class="section-title-row">
+          <div><span class="eyebrow">经 Clash 代理</span><h2 id="proxyTitle">站点访问质量</h2></div>
+          <span class="section-note">HTTP 总耗时，用于横向比较</span>
+        </div>
+        <div id="proxySites" class="proxy-grid"></div>
+      </section>
+
+      <section class="lower-grid">
+        <div class="panel candidates-panel">
+          <div class="section-heading">
+            <div><span class="eyebrow">最近诊断</span><h2>候选 IP</h2></div>
+            <span id="reportFreshness" class="status-pill success">有效至 10:50</span>
+          </div>
+          <div id="candidateList" class="candidate-list"></div>
+        </div>
+        <div class="panel events-panel">
+          <div class="section-heading">
+            <div><span class="eyebrow">操作与状态变化</span><h2>最近事件</h2></div>
+            <button class="text-button">查看全部</button>
+          </div>
+          <ol id="eventList" class="event-list"></ol>
+        </div>
+      </section>
+    </main>
+
+    <div id="drawerBackdrop" class="backdrop hidden"></div>
+    <aside id="settingsDrawer" class="settings-drawer" aria-hidden="true" aria-labelledby="settingsTitle">
+      <header><div><span class="eyebrow">策略</span><h2 id="settingsTitle">监测设置</h2></div><button class="icon-button" id="closeSettings" aria-label="关闭设置">×</button></header>
+      <form id="settingsForm">
+        <div class="setting-switch"><div><strong>定时监测</strong><p>按检测间隔自动更新健康状态</p></div><label class="switch"><input id="monitoringInput" type="checkbox" checked /><span></span></label></div>
+        <label class="field">检测间隔<span class="input-unit"><input id="intervalInput" type="number" value="60" min="1" /><i>秒</i></span><small>定时检测完成后，等待该时长开始下一轮</small></label>
+        <label class="field">请求超时<span class="input-unit"><input id="timeoutInput" type="number" value="5" min="0.1" step="0.1" /><i>秒</i></span></label>
+        <label class="field">入口失败阈值<span class="input-unit"><input id="thresholdInput" type="number" value="3" min="1" /><i>次</i></span></label>
+        <label class="field">自动切换冷却<span class="input-unit"><input id="cooldownInput" type="number" value="5" min="0" /><i>分钟</i></span></label>
+        <div class="setting-switch emphasized"><div><strong>自动切换入口 IP</strong><p>仅在已锁定、互联网正常且严格诊断通过时执行</p></div><label class="switch"><input id="autoSwitchInput" type="checkbox" /><span></span></label></div>
+        <div class="drawer-actions"><button type="button" class="button secondary" id="cancelSettings">取消</button><button type="submit" class="button primary">保存设置</button></div>
+      </form>
+    </aside>
+
+    <dialog id="confirmDialog" class="confirm-dialog">
+      <form method="dialog">
+        <div id="dialogIcon" class="dialog-icon">!</div>
+        <span class="eyebrow" id="dialogEyebrow">配置变更</span>
+        <h2 id="dialogTitle">确认操作</h2>
+        <p id="dialogDescription"></p>
+        <dl id="dialogFacts"></dl>
+        <div id="dialogWarning" class="dialog-warning"></div>
+        <div class="dialog-actions"><button value="cancel" class="button secondary" id="dialogCancel">取消</button><button value="confirm" class="button danger-button" id="dialogConfirm">确认</button></div>
+      </form>
+    </dialog>
+    <div id="toast" class="toast hidden" role="status"></div>
+  </body>
+</html>

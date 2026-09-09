@@ -1,0 +1,209 @@
+{
+  "status": {
+    "ok": true,
+    "data": {
+      "snapshot": {
+        "status": "healthy",
+        "profile": { "uid": "demo-profile-a", "name": "演示订阅 A" },
+        "lock": {
+          "locked": true,
+          "domain": "entry.example.com",
+          "ip": "192.0.2.42"
+        },
+        "internetSuccess": 3,
+        "internetTotal": 3,
+        "consecutiveFailures": 0,
+        "recommendedIp": "198.51.100.18",
+        "autoSwitchCooldownUntil": null,
+        "updatedAt": "2026-09-09T02:26:18.000Z"
+      }
+    }
+  },
+  "sites": {
+    "ok": true,
+    "data": {
+      "sites": {
+        "baidu": {
+          "target": "baidu",
+          "reachable": true,
+          "httpStatus": 200,
+          "durationMs": 86,
+          "errorType": null,
+          "checkedAt": "2026-09-09T02:26:12.000Z",
+          "serviceStatus": null,
+          "incidentSummary": null,
+          "stale": false
+        },
+        "taobao": {
+          "target": "taobao",
+          "reachable": true,
+          "httpStatus": 200,
+          "durationMs": 112,
+          "errorType": null,
+          "checkedAt": "2026-09-09T02:26:13.000Z",
+          "serviceStatus": null,
+          "incidentSummary": null,
+          "stale": false
+        },
+        "tencent": {
+          "target": "tencent",
+          "reachable": true,
+          "httpStatus": 302,
+          "durationMs": 94,
+          "errorType": null,
+          "checkedAt": "2026-09-09T02:26:13.000Z",
+          "serviceStatus": null,
+          "incidentSummary": null,
+          "stale": false
+        },
+        "google": {
+          "target": "google",
+          "reachable": true,
+          "httpStatus": 204,
+          "durationMs": 328,
+          "errorType": null,
+          "checkedAt": "2026-09-09T02:26:14.000Z",
+          "serviceStatus": null,
+          "incidentSummary": null,
+          "stale": false
+        },
+        "github": {
+          "target": "github",
+          "reachable": true,
+          "httpStatus": 200,
+          "durationMs": 462,
+          "errorType": null,
+          "checkedAt": "2026-09-09T02:26:14.000Z",
+          "serviceStatus": null,
+          "incidentSummary": null,
+          "stale": false
+        },
+        "openai_status": {
+          "target": "openai_status",
+          "reachable": true,
+          "httpStatus": 200,
+          "durationMs": 389,
+          "errorType": null,
+          "checkedAt": "2026-09-09T02:26:15.000Z",
+          "serviceStatus": "operational",
+          "incidentSummary": null,
+          "stale": false
+        }
+      }
+    }
+  },
+  "candidates": {
+    "ok": true,
+    "data": {
+      "diagnosis": {
+        "id": "22222222-2222-4222-8222-222222222222",
+        "status": "testable",
+        "generatedAt": "2026-09-09T02:20:00.000Z",
+        "profile": { "uid": "demo-profile-a", "name": "演示订阅 A" },
+        "domain": "entry.example.com",
+        "skipReason": null,
+        "detail": null,
+        "testedPorts": [443, 8443, 2053],
+        "testRounds": 3,
+        "candidates": [
+          {
+            "ip": "192.0.2.42",
+            "eligible": true,
+            "success": 9,
+            "total": 9,
+            "successRate": 100,
+            "averageMs": 43,
+            "failedPorts": [],
+            "sources": ["DNS"]
+          },
+          {
+            "ip": "198.51.100.18",
+            "eligible": true,
+            "success": 9,
+            "total": 9,
+            "successRate": 100,
+            "averageMs": 37,
+            "failedPorts": [],
+            "sources": ["DNS", "历史"]
+          },
+          {
+            "ip": "203.0.113.27",
+            "eligible": false,
+            "success": 6,
+            "total": 9,
+            "successRate": 66.7,
+            "averageMs": 91,
+            "failedPorts": [443],
+            "sources": ["DNS"]
+          }
+        ],
+        "recommendedIp": "198.51.100.18",
+        "savedAt": "2026-09-09T02:20:01.000Z"
+      }
+    }
+  },
+  "events": {
+    "ok": true,
+    "data": {
+      "items": [
+        {
+          "id": 31,
+          "type": "scheduled_health_changed",
+          "severity": "info",
+          "retention": "ordinary",
+          "summary": "定时健康检测完成",
+          "details": { "status": "healthy" },
+          "taskId": null,
+          "profileUid": "demo-profile-a",
+          "occurredAt": "2026-09-09T02:26:18.000Z"
+        },
+        {
+          "id": 30,
+          "type": "diagnose_succeeded",
+          "severity": "info",
+          "retention": "ordinary",
+          "summary": "严格诊断完成",
+          "details": { "candidateCount": 3 },
+          "taskId": "33333333-3333-4333-8333-333333333333",
+          "profileUid": "demo-profile-a",
+          "occurredAt": "2026-09-09T02:20:01.000Z"
+        }
+      ],
+      "limit": 50,
+      "offset": 0,
+      "total": 2
+    }
+  },
+  "settings": {
+    "ok": true,
+    "data": {
+      "settings": {
+        "checkIntervalMs": 60000,
+        "requestTimeoutMs": 5000,
+        "entryFailureThreshold": 3,
+        "autoSwitchCooldownMs": 300000,
+        "monitoringEnabled": true,
+        "autoSwitchEnabled": false,
+        "autoSwitchProfileUid": null,
+        "updatedAt": "2026-09-09T02:00:00.000Z"
+      }
+    }
+  },
+  "task": {
+    "ok": true,
+    "data": {
+      "task": {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "type": "apply",
+        "status": "running",
+        "createdAt": "2026-09-09T02:26:20.000Z",
+        "startedAt": "2026-09-09T02:26:20.100Z",
+        "finishedAt": null,
+        "input": { "ip": "198.51.100.18" },
+        "result": null,
+        "errorCode": null,
+        "errorMessage": null
+      }
+    }
+  }
+}

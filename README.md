@@ -47,6 +47,7 @@ HTTP 接口。
 当前快照和最近诊断不参与历史清理。
 完整表结构、关系、事务和安全规则见[数据库设计文档](docs/database-design.md)。
 接口契约、任务语义和错误码见 [API 设计文档](docs/api-design.md)。
+页面布局、状态表达和交互基准见[高保真可交互原型](docs/design/high-fidelity/README.md)。
 
 ```bash
 npm run format:check

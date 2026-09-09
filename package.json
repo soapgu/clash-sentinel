@@ -14,6 +14,7 @@
     "build": "npm run build -w @clash-sentinel/shared && npm run build -w @clash-sentinel/server && npm run build -w @clash-sentinel/web",
     "start": "node apps/server/dist/index.js",
     "test": "npm run build -w @clash-sentinel/shared && vitest run",
+    "test:prototype": "npm run build -w @clash-sentinel/shared && playwright test --config playwright.prototype.config.ts",
     "test:e2e": "npm run build && playwright test",
     "lint": "eslint .",
     "typecheck": "npm run build -w @clash-sentinel/shared && tsc --noEmit -p apps/server && tsc --noEmit -p apps/web",
