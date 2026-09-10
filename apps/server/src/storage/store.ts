@@ -26,6 +26,7 @@ import {
   type StoredTask,
   type TaskType,
 } from '@clash-sentinel/shared';
+import { DEFAULT_PROJECT_ROOT } from '../project-paths.js';
 import { runMigrations } from './migrations.js';
 
 /** 每个站点保留的历史结果数量。 */
@@ -39,8 +40,23 @@ export const STORED_JSON_LIMIT = 32 * 1024;
 
 /** SQLite 存储初始化选项。 */
 export interface SqliteStoreOptions {
-  /** 数据库路径；省略时读取环境变量或使用 `<cwd>/.state/clash-sentinel.db`。 */
+  /** 数据库路径；相对路径基于项目根目录解析。 */
   databasePath?: string;
+  /** 默认数据库路径使用的项目根目录；测试或嵌入场景可覆盖。 */
+  projectRoot?: string;
+}
+
+/** 解析稳定且不依赖进程 cwd 的 SQLite 文件路径。 */
+export function resolveDatabasePath(
+  options: SqliteStoreOptions = {},
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const configured =
+    options.databasePath ??
+    environment.CLASH_SENTINEL_DB_PATH ??
+    '.state/clash-sentinel.db';
+  if (configured === ':memory:') return configured;
+  return resolve(options.projectRoot ?? DEFAULT_PROJECT_ROOT, configured);
 }
 
 /** 创建持久化事件时由数据库生成字段之外的输入。 */
@@ -186,11 +202,7 @@ export class SqliteStore {
    * @param options 可选数据库路径配置。
    */
   constructor(options: SqliteStoreOptions = {}) {
-    const configured =
-      options.databasePath ??
-      process.env.CLASH_SENTINEL_DB_PATH ??
-      resolve(process.cwd(), '.state/clash-sentinel.db');
-    const path = configured === ':memory:' ? configured : resolve(configured);
+    const path = resolveDatabasePath(options);
     if (path !== ':memory:')
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.database = new Database(path);

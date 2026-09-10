@@ -38,8 +38,9 @@ Legacy 适配层使用参数数组启动脚本，不经过 Shell 拼接；为不
 排障输出在写入 `logs/legacy` 前会脱敏。该能力当前仅供后台内部调用，不提供业务
 HTTP 接口。
 
-本地存储使用同步、事务化的 SQLite，默认数据库位于当前工作目录的
-`.state/clash-sentinel.db`。可以通过 `CLASH_SENTINEL_DB_PATH` 环境变量或
+本地存储使用同步、事务化的 SQLite，默认数据库位于仓库根目录的
+`.state/clash-sentinel.db`，不受 npm workspace 当前目录影响。可以通过
+`CLASH_SENTINEL_DB_PATH` 环境变量或
 `SqliteStore` 构造参数覆盖路径；测试始终使用独立临时数据库。启动时会执行版本化迁移，
 并将上次进程遗留的运行中任务标记为“服务重启中断”，不会自动重放配置修改。
 数据库保存策略、当前快照、站点历史、最近诊断候选、任务和事件，不保存 Legacy 原始报告、

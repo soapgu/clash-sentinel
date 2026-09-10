@@ -897,14 +897,16 @@ flowchart TD
 
 | 用途 | 环境变量 | 默认值 |
 | --- | --- | --- |
-| Legacy 脚本 | `CLASH_SENTINEL_LEGACY_SCRIPT_PATH` | `<cwd>/scripts/legacy/clash-entry-ip.sh` |
+| Legacy 脚本 | `CLASH_SENTINEL_LEGACY_SCRIPT_PATH` | `<project-root>/scripts/legacy/clash-entry-ip.sh` |
 | Clash 配置根目录 | `CLASH_APP_DIR` | `~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev` |
 | Clash 运行配置 | `CLASH_RUNTIME_CONFIG` | `<Clash目录>/clash-verge.yaml` |
-| Legacy 状态 | `CLASH_ENTRY_STATE_DIR` | `<cwd>/.state/legacy` |
-| 诊断报告 | `CLASH_ENTRY_REPORT_DIR` | `<cwd>/reports/legacy` |
+| Legacy 状态 | `CLASH_ENTRY_STATE_DIR` | `<project-root>/.state/legacy` |
+| 诊断报告 | `CLASH_ENTRY_REPORT_DIR` | `<project-root>/reports/legacy` |
 | 配置备份 | `CLASH_ENTRY_BACKUP_DIR` | `<Clash目录>/entry-ip-backups` |
-| Legacy 日志 | `CLASH_SENTINEL_LEGACY_LOG_DIR` | `<cwd>/logs/legacy` |
-| SQLite | `CLASH_SENTINEL_DB_PATH` | `<cwd>/.state/clash-sentinel.db` |
+| Legacy 日志 | `CLASH_SENTINEL_LEGACY_LOG_DIR` | `<project-root>/logs/legacy` |
+| SQLite | `CLASH_SENTINEL_DB_PATH` | `<project-root>/.state/clash-sentinel.db` |
+
+`<project-root>` 由服务端模块位置推导，不依赖 `process.cwd()`；因此从仓库根目录、npm workspace 或编译后的 `dist` 启动时使用相同路径。环境变量中的相对路径同样以该目录为基准，绝对路径保持不变。
 
 收到 `SIGINT` 或 `SIGTERM` 后停止调度、HTTP 和新任务，等待当前手动或定时检测结束，关闭 HTTP 连接池，再关闭 SQLite。监听失败也必须关闭数据库。
 

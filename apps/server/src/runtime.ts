@@ -1,6 +1,5 @@
-import { homedir } from 'node:os';
-import { resolve } from 'node:path';
 import { LegacyAdapter } from './legacy/adapter.js';
+import { DEFAULT_PROJECT_ROOT, resolveRuntimePaths } from './project-paths.js';
 import { ClashProxyConfig } from './services/health/proxy-config.js';
 import { HealthCheckService } from './services/health/health-check.js';
 import { HealthScheduler } from './services/health/health-scheduler.js';
@@ -28,48 +27,33 @@ export interface RuntimeDependencies {
  * 根据安全默认值和环境变量创建生产存储与 Legacy 任务服务。
  *
  * @param environment 运行环境变量，测试可注入独立配置。
- * @param cwd 项目工作目录。
+ * @param projectRoot 项目根目录，默认由当前模块位置推导而非进程 cwd。
  * @returns 可注式关闭的生产运行时依赖。
  */
 export function createRuntimeDependencies(
   environment: NodeJS.ProcessEnv = process.env,
-  cwd = process.cwd(),
+  projectRoot = DEFAULT_PROJECT_ROOT,
 ): RuntimeDependencies {
-  const appDir =
-    environment.CLASH_APP_DIR ||
-    resolve(
-      homedir(),
-      'Library/Application Support/io.github.clash-verge-rev.clash-verge-rev',
-    );
+  const paths = resolveRuntimePaths(environment, projectRoot);
   const store = new SqliteStore({
-    databasePath:
-      environment.CLASH_SENTINEL_DB_PATH ||
-      resolve(cwd, '.state/clash-sentinel.db'),
+    databasePath: paths.databasePath,
   });
   const adapter = new LegacyAdapter({
-    scriptPath:
-      environment.CLASH_SENTINEL_LEGACY_SCRIPT_PATH ||
-      resolve(cwd, 'scripts/legacy/clash-entry-ip.sh'),
-    appDir,
-    stateDir:
-      environment.CLASH_ENTRY_STATE_DIR || resolve(cwd, '.state/legacy'),
-    reportDir:
-      environment.CLASH_ENTRY_REPORT_DIR || resolve(cwd, 'reports/legacy'),
-    backupDir:
-      environment.CLASH_ENTRY_BACKUP_DIR || resolve(appDir, 'entry-ip-backups'),
-    logDir:
-      environment.CLASH_SENTINEL_LEGACY_LOG_DIR || resolve(cwd, 'logs/legacy'),
+    scriptPath: paths.legacyScriptPath,
+    appDir: paths.appDir,
+    stateDir: paths.legacyStateDir,
+    reportDir: paths.legacyReportDir,
+    backupDir: paths.legacyBackupDir,
+    logDir: paths.legacyLogDir,
     environment,
   });
   const coordinator = new OperationCoordinator();
   const notifier = new StatusNotificationCenter();
   const siteProbe = new UndiciSiteProbe();
-  const runtimeConfigPath =
-    environment.CLASH_RUNTIME_CONFIG || resolve(appDir, 'clash-verge.yaml');
   const healthCheck = new HealthCheckService({
     store,
     siteProbe,
-    proxyConfig: new ClashProxyConfig(runtimeConfigPath),
+    proxyConfig: new ClashProxyConfig(paths.runtimeConfigPath),
     legacy: adapter,
   });
   const taskService = new TaskService({

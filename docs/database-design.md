@@ -34,7 +34,7 @@ Mihomo 控制器密钥、报告路径或备份路径。
 
 1. `new SqliteStore({ databasePath })` 构造参数。
 2. `CLASH_SENTINEL_DB_PATH` 环境变量。
-3. `<cwd>/.state/clash-sentinel.db` 默认路径。
+3. `<project-root>/.state/clash-sentinel.db` 默认路径；项目根目录由服务端模块位置推导，不依赖进程当前目录。
 
 相对路径会通过 `path.resolve()` 转换为绝对路径。文件型数据库的父目录会以 `0700` 权限递归
 创建；测试显式传入临时路径，也可以使用 `:memory:` 创建内存数据库。

@@ -10,9 +10,13 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
+import { DEFAULT_PROJECT_ROOT } from '../project-paths.js';
 import { LegacyAdapter, LegacyAdapterError } from './adapter.js';
 
-const legacyScript = resolve(process.cwd(), 'scripts/legacy/clash-entry-ip.sh');
+const legacyScript = resolve(
+  DEFAULT_PROJECT_ROOT,
+  'scripts/legacy/clash-entry-ip.sh',
+);
 const roots: string[] = [];
 
 afterEach(async () => {
