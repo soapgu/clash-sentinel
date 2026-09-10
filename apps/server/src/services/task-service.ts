@@ -3,6 +3,7 @@ import type {
   ApiErrorDetails,
   StoredJsonObject,
   StoredTask,
+  StreamResource,
   TaskType,
 } from '@clash-sentinel/shared';
 import { LegacyAdapterError, type LegacyAdapter } from '../legacy/adapter.js';
@@ -13,9 +14,17 @@ import type {
   OperationCoordinator,
   OperationLease,
 } from './operation-coordinator.js';
+import type { StatusNotifier } from './status-notifier.js';
+import type { HealthCheckChanges } from './health/health-check.js';
 
 /** Step 5 允许通过 API 启动的 Legacy 动作。 */
 export type ApiActionType = Exclude<TaskType, 'auto_switch'>;
+
+/** 具体动作交给统一任务生命周期保存的结果及资源变化。 */
+interface ActionExecution {
+  result: StoredJsonObject;
+  changedResources: StreamResource[];
+}
 
 /** 任务服务实际调用的 LegacyAdapter 公开能力。 */
 export type LegacyOperations = Pick<
@@ -39,6 +48,8 @@ export interface TaskServiceOptions {
   healthCheck: Pick<HealthCheckService, 'run'>;
   /** 手动任务与定时健康检测共享的全局执行槽。 */
   coordinator: OperationCoordinator;
+  /** 向 Web 客户端发布任务状态和资源失效通知。 */
+  notifier: StatusNotifier;
 }
 
 /** 串行执行 API 发起的 Legacy 动作并持久化完整生命周期。 */
@@ -47,6 +58,7 @@ export class TaskService {
   private readonly adapter: LegacyOperations;
   private readonly healthCheck: Pick<HealthCheckService, 'run'>;
   private readonly coordinator: OperationCoordinator;
+  private readonly notifier: StatusNotifier;
   private activeCompletion: Promise<void> | null = null;
   private accepting = true;
 
@@ -56,6 +68,7 @@ export class TaskService {
     this.adapter = options.adapter;
     this.healthCheck = options.healthCheck;
     this.coordinator = options.coordinator;
+    this.notifier = options.notifier;
   }
 
   /** @returns 当前活动任务 UUID；空闲时返回 null。 */
@@ -90,6 +103,7 @@ export class TaskService {
     const task = this.store.createTask(type, input);
     const lease = this.coordinator.tryAcquireManual(task.id);
     if (!lease) this.throwConflict();
+    this.notifier.publish('task_queued', [this.taskResource(task.id)]);
     this.activeCompletion = Promise.resolve().then(() =>
       this.execute(task, lease),
     );
@@ -110,9 +124,14 @@ export class TaskService {
   private async execute(task: StoredTask, lease: OperationLease) {
     try {
       this.store.startTask(task.id);
-      const result = await this.executeAction(task);
-      this.store.completeTask(task.id, result);
+      this.notifier.publish('task_started', [this.taskResource(task.id)]);
+      const execution = await this.executeAction(task);
+      this.store.completeTask(task.id, execution.result);
       this.appendEventSafely(task, true);
+      this.notifier.publish('task_succeeded', [
+        this.taskResource(task.id),
+        ...execution.changedResources,
+      ]);
     } catch (error) {
       const code =
         error instanceof LegacyAdapterError ? error.code : 'INTERNAL_ERROR';
@@ -120,12 +139,19 @@ export class TaskService {
         error instanceof LegacyAdapterError
           ? error.message
           : '后台任务执行失败';
+      let failedPersisted = false;
       try {
         this.store.failTask(task.id, code, message);
+        failedPersisted = true;
       } catch {
         // 数据库已经关闭或任务已进入终态时不能再改变真实结果。
       }
       this.appendEventSafely(task, false, code);
+      if (failedPersisted)
+        this.notifier.publish('task_failed', [
+          this.taskResource(task.id),
+          'events',
+        ]);
     } finally {
       lease.release();
       this.activeCompletion = null;
@@ -133,20 +159,30 @@ export class TaskService {
   }
 
   /** 根据固定任务类型调用适配器并保存对应快照或诊断。 */
-  private async executeAction(task: StoredTask): Promise<StoredJsonObject> {
+  private async executeAction(task: StoredTask): Promise<ActionExecution> {
     switch (task.type) {
       case 'health_check': {
-        return this.asJson(await this.healthCheck.run('manual'));
+        const execution = await this.healthCheck.run('manual');
+        return {
+          result: this.asJson(execution.snapshot),
+          changedResources: this.healthCheckResources(execution.changes),
+        };
       }
       case 'diagnose':
-        return this.asJson(
-          this.store.replaceDiagnosis(await this.adapter.diagnose()),
-        );
+        return {
+          result: this.asJson(
+            this.store.replaceDiagnosis(await this.adapter.diagnose()),
+          ),
+          changedResources: ['candidates', 'events'],
+        };
       case 'apply': {
         const ip = String(task.input?.ip ?? '');
         const result = await this.adapter.applyIp(ip);
         await this.refreshIdentity(false);
-        return this.asJson(result);
+        return {
+          result: this.asJson(result),
+          changedResources: ['status', 'events'],
+        };
       }
       case 'reset': {
         const result = await this.adapter.resetLock();
@@ -155,12 +191,18 @@ export class TaskService {
           autoSwitchEnabled: false,
           autoSwitchProfileUid: null,
         });
-        return this.asJson(result);
+        return {
+          result: this.asJson(result),
+          changedResources: ['status', 'settings', 'events'],
+        };
       }
       case 'rollback': {
         const result = await this.adapter.rollback();
         await this.refreshIdentity(false);
-        return this.asJson(result);
+        return {
+          result: this.asJson(result),
+          changedResources: ['status', 'events'],
+        };
       }
       default:
         throw new Error('不支持的任务类型');
@@ -226,6 +268,23 @@ export class TaskService {
   /** 将已由共享 Schema 约束的领域对象转换为存储扩展 JSON。 */
   private asJson(value: object): StoredJsonObject {
     return value as StoredJsonObject;
+  }
+
+  /** 将健康检查实际变化转换为任务成功后需要重新读取的资源。 */
+  private healthCheckResources(changes: HealthCheckChanges): StreamResource[] {
+    const resources: StreamResource[] = [];
+    if (changes.statusUpdated) resources.push('status');
+    if (changes.sitesUpdated) resources.push('sites');
+    if (changes.candidatesUpdated) resources.push('candidates');
+    if (changes.eventAppended) resources.push('events');
+    // 手动任务成功本身会追加审计事件。
+    if (!resources.includes('events')) resources.push('events');
+    return resources;
+  }
+
+  /** 将已校验的任务 UUID 转换为共享 SSE 任务资源。 */
+  private taskResource(taskId: string): `task:${string}` {
+    return `task:${taskId}`;
   }
 
   /** 抛出不包含本机状态细节的统一动作冲突。 */

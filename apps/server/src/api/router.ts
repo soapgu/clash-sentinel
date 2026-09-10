@@ -18,10 +18,12 @@ import {
   taskParamsSchema,
   taskResponseSchema,
   type SiteSnapshotMap,
+  type StreamNotification,
 } from '@clash-sentinel/shared';
 import type { HealthScheduler } from '../services/health/health-scheduler.js';
 import type { SqliteStore } from '../storage/store.js';
 import type { TaskService } from '../services/task-service.js';
+import type { StatusNotificationCenter } from '../services/status-notifier.js';
 import { ApiError } from './errors.js';
 
 /** API 路由访问持久化数据和异步任务服务所需的依赖。 */
@@ -32,8 +34,12 @@ export interface ApiRouterOptions {
   taskService: TaskService;
   /** 当前进程中的定时健康检测调度器。 */
   scheduler: Pick<HealthScheduler, 'getSnapshot'>;
+  /** 当前进程中的 SSE 通知和连接生命周期中心。 */
+  notifier: Pick<StatusNotificationCenter, 'subscribe'>;
   /** 测试站点过期边界时可注入的 Unix 毫秒时钟。 */
   now?: () => number;
+  /** SSE 保活周期；生产默认 15 秒，测试可缩短。 */
+  streamHeartbeatMs?: number;
 }
 
 /** 使用 Zod 校验不可信请求数据并只公开字段路径。 */
@@ -56,8 +62,9 @@ function requestBody(ctx: Context): unknown {
 
 /** 创建严格遵循共享 Schema 的业务 API 路由。 */
 export function createApiRouter(options: ApiRouterOptions) {
-  const { store, taskService, scheduler } = options;
+  const { store, taskService, scheduler, notifier } = options;
   const now = options.now ?? Date.now;
+  const streamHeartbeatMs = options.streamHeartbeatMs ?? 15_000;
   const router = new Router();
 
   router.get('/api/health', (ctx) => {
@@ -79,6 +86,45 @@ export function createApiRouter(options: ApiRouterOptions) {
       ok: true,
       data: { monitoring: scheduler.getSnapshot() },
     });
+  });
+
+  router.get('/api/stream', (ctx) => {
+    let heartbeat: NodeJS.Timeout | null = null;
+    let unsubscribe: () => void = () => undefined;
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      if (heartbeat) clearInterval(heartbeat);
+      heartbeat = null;
+      unsubscribe();
+      if (!ctx.res.destroyed && !ctx.res.writableEnded) ctx.res.end();
+    };
+    const writeNotification = (notification: StreamNotification) => {
+      const frame = `id: ${notification.id}\nevent: invalidate\ndata: ${JSON.stringify(notification)}\n\n`;
+      if (!ctx.res.write(frame)) {
+        cleanup();
+        throw new Error('SSE 客户端读取过慢');
+      }
+    };
+
+    ctx.req.setTimeout(0);
+    ctx.status = 200;
+    ctx.set('Content-Type', 'text/event-stream; charset=utf-8');
+    ctx.set('Cache-Control', 'no-cache, no-transform');
+    ctx.set('Connection', 'keep-alive');
+    ctx.set('X-Accel-Buffering', 'no');
+    ctx.respond = false;
+    ctx.res.flushHeaders();
+    ctx.res.once('close', cleanup);
+    ctx.res.once('error', cleanup);
+    unsubscribe = notifier.subscribe(writeNotification, cleanup);
+    if (!cleaned) {
+      heartbeat = setInterval(() => {
+        if (!ctx.res.write(': keepalive\n\n')) cleanup();
+      }, streamHeartbeatMs);
+      heartbeat.unref();
+    }
   });
 
   router.get('/api/sites', (ctx) => {

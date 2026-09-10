@@ -1,6 +1,10 @@
-import type { MonitoringSnapshot } from '@clash-sentinel/shared';
+import type {
+  MonitoringSnapshot,
+  StreamResource,
+} from '@clash-sentinel/shared';
 import type { SqliteStore } from '../../storage/store.js';
 import type { OperationCoordinator } from '../operation-coordinator.js';
+import type { StatusNotifier } from '../status-notifier.js';
 import type { HealthCheckService } from './health-check.js';
 
 /** 定时健康检测调度器依赖。 */
@@ -11,6 +15,8 @@ export interface HealthSchedulerOptions {
   coordinator: OperationCoordinator;
   /** 执行完整六站检测的编排器。 */
   healthCheck: Pick<HealthCheckService, 'run'>;
+  /** 向 Web 客户端发布调度运行态和快照失效通知。 */
+  notifier: StatusNotifier;
   /** 返回当前 Unix 毫秒时间；测试可注入可控时钟。 */
   now?: () => number;
 }
@@ -84,11 +90,21 @@ export class HealthScheduler {
     }
     this.lastStartedAt = new Date(this.now()).toISOString();
     this.nextTickAt = null;
+    this.options.notifier.publish('monitoring_started', ['monitoring']);
+    const changedResources: StreamResource[] = ['monitoring'];
     this.currentRun = this.options.healthCheck
       .run('scheduled')
-      .then(() => undefined)
+      .then((execution) => {
+        if (execution.changes.statusUpdated) changedResources.push('status');
+        if (execution.changes.sitesUpdated) changedResources.push('sites');
+        if (execution.changes.candidatesUpdated)
+          changedResources.push('candidates');
+        if (execution.changes.eventAppended) changedResources.push('events');
+      })
       .catch(() => {
-        this.appendFailureEvent();
+        // 异常前可能已经写入部分站点或健康快照，失败路径保守刷新二者。
+        changedResources.push('status', 'sites');
+        if (this.appendFailureEvent()) changedResources.push('events');
       })
       .finally(() => {
         this.lastCompletedAt = new Date(this.now()).toISOString();
@@ -96,6 +112,7 @@ export class HealthScheduler {
         this.currentRun = null;
         if (!this.stopped)
           this.schedule(this.options.store.getSettings().checkIntervalMs);
+        this.options.notifier.publish('monitoring_completed', changedResources);
       });
   }
 
@@ -112,7 +129,7 @@ export class HealthScheduler {
   }
 
   /** 记录不包含原始异常、路径或响应正文的定时轮次失败。 */
-  private appendFailureEvent(): void {
+  private appendFailureEvent(): boolean {
     try {
       this.options.store.appendEvent({
         type: 'scheduled_health_failed',
@@ -120,8 +137,10 @@ export class HealthScheduler {
         retention: 'ordinary',
         summary: '定时健康检测失败',
       });
+      return true;
     } catch {
       // 调度失败事件不能阻止释放全局槽和后续轮次。
+      return false;
     }
   }
 }

@@ -42,6 +42,20 @@ export interface HealthCheckServiceOptions {
 /** 完整健康检测的调用来源。 */
 export type HealthCheckSource = 'manual' | 'scheduled';
 
+/** 一轮健康检查实际成功写入的资源摘要。 */
+export interface HealthCheckChanges {
+  statusUpdated: boolean;
+  sitesUpdated: boolean;
+  candidatesUpdated: boolean;
+  eventAppended: boolean;
+}
+
+/** 健康快照和仅供服务端通知层使用的执行摘要。 */
+export interface HealthCheckExecution {
+  snapshot: HealthSnapshot;
+  changes: HealthCheckChanges;
+}
+
 /** 编排六站探测、入口判断、诊断持久化和综合快照。 */
 export class HealthCheckService {
   private readonly now: () => Date;
@@ -57,7 +71,13 @@ export class HealthCheckService {
    * @param source 手动任务或定时调度来源。
    * @returns 已持久化的综合健康快照。
    */
-  async run(source: HealthCheckSource): Promise<HealthSnapshot> {
+  async run(source: HealthCheckSource): Promise<HealthCheckExecution> {
+    const changes: HealthCheckChanges = {
+      statusUpdated: false,
+      sitesUpdated: false,
+      candidatesUpdated: false,
+      eventAppended: false,
+    };
     const settings = this.options.store.getSettings();
     const directPromise = Promise.all(
       (['baidu', 'taobao', 'tencent'] as const).map((target) =>
@@ -93,6 +113,7 @@ export class HealthCheckService {
     ]);
     for (const result of [...directResults, ...proxyResults])
       this.options.store.appendSiteResult(result);
+    changes.sitesUpdated = true;
 
     const previous = this.options.store.getHealthSnapshot();
     const status = await this.readStatusSafely();
@@ -113,13 +134,19 @@ export class HealthCheckService {
 
     snapshot.status = this.finalStatus(snapshot, status, proxyResults);
     const saved = this.options.store.upsertHealthSnapshot(snapshot);
-    if (snapshot.status === 'entry_down')
+    changes.statusUpdated = true;
+    if (snapshot.status === 'entry_down') {
       this.options.store.replaceDiagnosis(
         await this.options.legacy.readLatestDiagnosis(),
       );
+      changes.candidatesUpdated = true;
+    }
     if (source === 'scheduled' && previous?.status !== saved.status)
-      this.appendTransitionEventSafely(previous?.status ?? null, saved);
-    return saved;
+      changes.eventAppended = this.appendTransitionEventSafely(
+        previous?.status ?? null,
+        saved,
+      );
+    return { snapshot: saved, changes };
   }
 
   /** 状态命令失败时保留站点结果并把身份降级为未知。 */
@@ -192,7 +219,7 @@ export class HealthCheckService {
   private appendTransitionEventSafely(
     previousStatus: HealthSnapshot['status'] | null,
     snapshot: HealthSnapshot,
-  ): void {
+  ): boolean {
     try {
       this.options.store.appendEvent({
         type: 'health_status_changed',
@@ -209,8 +236,10 @@ export class HealthCheckService {
         profileUid: snapshot.profile?.uid ?? null,
         occurredAt: snapshot.updatedAt,
       });
+      return true;
     } catch {
       // 状态变化事件属于辅助审计，失败不能反转已保存的健康结果。
+      return false;
     }
   }
 }

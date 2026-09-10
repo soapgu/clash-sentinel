@@ -118,8 +118,14 @@ async function setup(
 
 test('两个国内站点成功时评价入口并保存全部六站', async () => {
   const value = await setup({ taobao: result('taobao', false) });
-  const snapshot = await value.service.run('manual');
+  const { snapshot, changes } = await value.service.run('manual');
   expect(snapshot).toMatchObject({ status: 'healthy', internetSuccess: 2 });
+  expect(changes).toEqual({
+    statusUpdated: true,
+    sitesUpdated: true,
+    candidatesUpdated: false,
+    eventAppended: false,
+  });
   expect(value.legacy.healthCheck).toHaveBeenCalledOnce();
   expect(value.store.listSiteHistory('taobao')).toHaveLength(1);
   expect(value.store.getSiteSnapshot('openai_status')).not.toBeNull();
@@ -145,7 +151,7 @@ test('断网或不确定时不评价入口并保留失败计数', async () => {
       autoSwitchCooldownUntil: null,
       updatedAt: '2026-09-09T03:59:00.000Z',
     });
-    const snapshot = await value.service.run('manual');
+    const { snapshot } = await value.service.run('manual');
     expect(snapshot.status).toBe(
       successful === 0 ? 'internet_down' : 'internet_uncertain',
     );
@@ -166,16 +172,31 @@ test('入口达到失败阈值后读取现有报告而不再次诊断', async ()
     recommendedIp: '198.51.100.21',
   });
   await expect(value.service.run('scheduled')).resolves.toMatchObject({
-    status: 'entry_down',
-    consecutiveFailures: 3,
+    snapshot: { status: 'entry_down', consecutiveFailures: 3 },
+    changes: { candidatesUpdated: true, eventAppended: true },
   });
   expect(value.legacy.readLatestDiagnosis).toHaveBeenCalledOnce();
   expect(value.store.getDiagnosis()?.recommendedIp).toBe('198.51.100.21');
 });
 
+test('状态变化事件写入失败不反转检测结果且摘要保持未写入', async () => {
+  const value = await setup();
+  vi.spyOn(value.store, 'appendEvent').mockImplementation(() => {
+    throw new Error('event unavailable');
+  });
+  const execution = await value.service.run('scheduled');
+  expect(execution.snapshot.status).toBe('healthy');
+  expect(execution.changes).toMatchObject({
+    statusUpdated: true,
+    sitesUpdated: true,
+    candidatesUpdated: false,
+    eventAppended: false,
+  });
+});
+
 test('入口健康时将控制接口或全代理故障表达为 proxy_error', async () => {
   const controllerDown = await setup({}, { controllerAvailable: false });
-  expect((await controllerDown.service.run('manual')).status).toBe(
+  expect((await controllerDown.service.run('manual')).snapshot.status).toBe(
     'proxy_error',
   );
 
@@ -186,7 +207,9 @@ test('入口健康时将控制接口或全代理故障表达为 proxy_error', as
     ]),
   );
   const proxyDown = await setup(proxyFailures);
-  expect((await proxyDown.service.run('manual')).status).toBe('proxy_error');
+  expect((await proxyDown.service.run('manual')).snapshot.status).toBe(
+    'proxy_error',
+  );
   expect(proxyDown.legacy.healthCheck).toHaveBeenCalledOnce();
 });
 
@@ -202,14 +225,15 @@ test('入口异常优先于单个海外失败且海外结果不改变失败计�
     recommendedIp: null,
   });
   await expect(value.service.run('manual')).resolves.toMatchObject({
-    status: 'entry_suspected',
-    consecutiveFailures: 2,
+    snapshot: { status: 'entry_suspected', consecutiveFailures: 2 },
   });
 });
 
 test('代理配置缺失时不发出海外请求并标记 proxy_error', async () => {
   const value = await setup({}, {}, null);
-  expect((await value.service.run('manual')).status).toBe('proxy_error');
+  expect((await value.service.run('manual')).snapshot.status).toBe(
+    'proxy_error',
+  );
   expect(value.siteProbe.probe).toHaveBeenCalledTimes(3);
   expect(value.store.getSiteSnapshot('google')).toMatchObject({
     reachable: false,

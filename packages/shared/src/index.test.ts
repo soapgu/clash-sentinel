@@ -6,6 +6,7 @@ import {
   monitoringSnapshotSchema,
   settingsSchema,
   siteResultSchema,
+  streamNotificationSchema,
 } from './index.js';
 test('拒绝错误的服务状态结构', () => {
   expect(
@@ -116,4 +117,28 @@ test('站点不可达时拒绝虚假 HTTP 状态和耗时', () => {
       incidentSummary: null,
     }).success,
   ).toBe(false);
+});
+
+test('SSE 通知只接受版本化且无重复的基础或任务资源', () => {
+  const valid = {
+    version: 1,
+    id: 1,
+    occurredAt: '2026-09-09T04:00:00.000Z',
+    reason: 'task_succeeded',
+    resources: [
+      'task:550e8400-e29b-41d4-a716-446655440000',
+      'status',
+      'events',
+    ],
+  };
+  expect(streamNotificationSchema.safeParse(valid).success).toBe(true);
+  for (const invalid of [
+    { ...valid, version: 2 },
+    { ...valid, id: 0 },
+    { ...valid, occurredAt: 'not-a-time' },
+    { ...valid, resources: ['unknown'] },
+    { ...valid, resources: ['task:not-a-uuid'] },
+    { ...valid, resources: ['events', 'events'] },
+  ])
+    expect(streamNotificationSchema.safeParse(invalid).success).toBe(false);
 });

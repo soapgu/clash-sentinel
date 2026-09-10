@@ -85,6 +85,10 @@ export function createApp(options: CreateAppOptions) {
   });
 
   app.use(async (_ctx, next) => {
+    if (_ctx.path === '/api/stream') {
+      await next();
+      return;
+    }
     let timer: NodeJS.Timeout | undefined;
     try {
       await Promise.race([

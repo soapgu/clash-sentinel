@@ -1,6 +1,6 @@
 # Clash Sentinel API 设计
 
-状态：Step 5 和 Step 8 已实现契约。共享 Zod Schema、Koa 路由和测试必须与本文一致。
+状态：Step 5、Step 8 和 Step 9 已实现契约。共享 Zod Schema、Koa 路由和测试必须与本文一致。
 
 依据：[项目规划](../PROJECT_PLAN.md)、[实施步骤](../STEP.md)、[数据库设计](database-design.md)。
 
@@ -537,6 +537,65 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
 ```
 
 这些运行时间只属于当前服务进程，不写入 SQLite。服务重启后重新从本次进程生命周期建立状态，不复用或伪造上一次进程的调度时间。
+
+### 3.9 `GET /api/stream`
+
+> 状态：Step 9 已实现契约。
+
+建立同源只读 SSE 长连接，只发送资源失效通知，不发送完整业务快照。客户端收到通知后通过现有 GET API 重新读取权威数据；接口本身不执行 Shell 或网络检测，不创建任务、事件或数据库记录。
+
+响应头固定包含：
+
+```http
+Content-Type: text/event-stream; charset=utf-8
+Cache-Control: no-cache, no-transform
+Connection: keep-alive
+X-Accel-Buffering: no
+```
+
+业务事件名固定为 `invalidate`。通知结构包含固定版本、当前进程内递增 ID、发生时间、原因和需要重新读取的资源：
+
+```text
+id: 3
+event: invalidate
+data: {"version":1,"id":3,"occurredAt":"2026-09-09T04:00:00.000Z","reason":"monitoring_completed","resources":["monitoring","status","sites","candidates","events"]}
+
+```
+
+`reason` 只允许：
+
+- `sync`
+- `monitoring_started`
+- `monitoring_completed`
+- `task_queued`
+- `task_started`
+- `task_succeeded`
+- `task_failed`
+
+资源只允许 `monitoring`、`status`、`sites`、`candidates`、`events`、`settings` 或 `task:<UUID>`，同一通知内不得重复。建连时服务端只向新客户端发送一次 `sync`，其中包含全部六种基础资源。
+
+服务端每 15 秒发送 `: keepalive` 注释维持空闲连接。保活不属于业务事件，不递增事件 ID，也不要求客户端刷新。连接断开、客户端读取过慢或服务关闭时，服务端移除对应订阅者并释放保活定时器；单个客户端异常不得影响其他连接或后台业务。
+
+事件 ID 仅在当前进程内有效，服务重启后允许从 1 重新开始。服务端忽略 `Last-Event-ID`，不持久化或补发历史通知；每次重新连接都通过新的 `sync` 要求客户端校准全部快照。
+
+定时检测通知映射：
+
+- 开始：`monitoring_started → monitoring`。
+- 正常完成：`monitoring_completed` 始终包含 `monitoring`，并根据健康检查返回的变化摘要追加实际成功写入的 `status`、`sites`、`candidates` 和 `events`；`candidates` 仅在入口故障诊断被成功替换时出现，`events` 仅在状态变化事件成功落库时出现。
+- 整体轮次失败：保守通知可能已经部分写入的 `monitoring,status,sites`，不通知 `candidates`；只有定时失败事件成功落库时才追加 `events`。
+
+手动任务的 `task_queued` 和 `task_started` 只包含 `task:<UUID>`。终态映射如下：
+
+| 任务结果 | 失效资源 |
+| --- | --- |
+| `health_check` 成功 | `task:<UUID>`、健康检查变化摘要中的资源，以及手动任务成功事件对应的 `events` |
+| `diagnose` 成功 | `task:<UUID>,candidates,events` |
+| `apply` 成功 | `task:<UUID>,status,events` |
+| `reset` 成功 | `task:<UUID>,status,settings,events` |
+| `rollback` 成功 | `task:<UUID>,status,events` |
+| 任一任务失败 | `task:<UUID>,events` |
+
+普通 `PUT /api/settings` 成功或失败均不发送 SSE。成功响应已经包含完整设置，客户端应直接更新缓存并主动刷新 `GET /api/monitoring`。`reset` 会在任务内部关闭自动切换，因此其成功通知仍包含 `settings`。
 
 ## 4. 设置接口
 

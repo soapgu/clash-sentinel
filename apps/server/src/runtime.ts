@@ -6,6 +6,7 @@ import { HealthCheckService } from './services/health/health-check.js';
 import { HealthScheduler } from './services/health/health-scheduler.js';
 import { UndiciSiteProbe } from './services/health/site-probe.js';
 import { OperationCoordinator } from './services/operation-coordinator.js';
+import { StatusNotificationCenter } from './services/status-notifier.js';
 import { TaskService } from './services/task-service.js';
 import { SqliteStore } from './storage/store.js';
 
@@ -17,6 +18,8 @@ export interface RuntimeDependencies {
   taskService: TaskService;
   /** 启动即运行且可安全停止的健康调度器。 */
   scheduler: HealthScheduler;
+  /** 当前进程内的 SSE 通知和连接生命周期中心。 */
+  notifier: StatusNotificationCenter;
   /** 关闭时需要释放连接池的 HTTP 探测器。 */
   siteProbe: UndiciSiteProbe;
 }
@@ -59,6 +62,7 @@ export function createRuntimeDependencies(
     environment,
   });
   const coordinator = new OperationCoordinator();
+  const notifier = new StatusNotificationCenter();
   const siteProbe = new UndiciSiteProbe();
   const runtimeConfigPath =
     environment.CLASH_RUNTIME_CONFIG || resolve(appDir, 'clash-verge.yaml');
@@ -73,11 +77,18 @@ export function createRuntimeDependencies(
     adapter,
     healthCheck,
     coordinator,
+    notifier,
   });
   return {
     store,
     taskService,
-    scheduler: new HealthScheduler({ store, coordinator, healthCheck }),
+    scheduler: new HealthScheduler({
+      store,
+      coordinator,
+      healthCheck,
+      notifier,
+    }),
+    notifier,
     siteProbe,
   };
 }

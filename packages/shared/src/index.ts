@@ -434,6 +434,65 @@ export const apiErrorResponseSchema = z.object({
 /** 统一 API 失败响应。 */
 export type ApiErrorResponse = z.infer<typeof apiErrorResponseSchema>;
 
+/** 校验 SSE 可以通知客户端失效的基础资源。 */
+export const streamBaseResourceSchema = z.enum([
+  'monitoring',
+  'status',
+  'sites',
+  'candidates',
+  'events',
+  'settings',
+]);
+/** SSE 可以通知客户端失效的基础资源。 */
+export type StreamBaseResource = z.infer<typeof streamBaseResourceSchema>;
+
+/** SSE 指定任务资源标识。 */
+export type StreamTaskResource = `task:${string}`;
+/** 校验指定任务的 SSE 资源标识。 */
+export const streamTaskResourceSchema = z.custom<StreamTaskResource>(
+  (value) =>
+    typeof value === 'string' &&
+    value.startsWith('task:') &&
+    z.string().uuid().safeParse(value.slice('task:'.length)).success,
+  '必须是 task:<UUID> 格式',
+);
+
+/** 校验 SSE 资源失效通知的稳定原因。 */
+export const streamNotificationReasonSchema = z.enum([
+  'sync',
+  'monitoring_started',
+  'monitoring_completed',
+  'task_queued',
+  'task_started',
+  'task_succeeded',
+  'task_failed',
+]);
+/** SSE 资源失效通知的稳定原因。 */
+export type StreamNotificationReason = z.infer<
+  typeof streamNotificationReasonSchema
+>;
+
+/** 校验 SSE 只携带资源失效信息而不携带完整业务快照。 */
+export const streamNotificationSchema = z
+  .object({
+    version: z.literal(1),
+    id: z.number().int().positive(),
+    occurredAt: z.string().datetime(),
+    reason: streamNotificationReasonSchema,
+    resources: z
+      .array(z.union([streamBaseResourceSchema, streamTaskResourceSchema]))
+      .min(1),
+  })
+  .strict()
+  .refine((value) => new Set(value.resources).size === value.resources.length, {
+    path: ['resources'],
+    message: '失效资源不能重复',
+  });
+/** SSE 资源失效通知。 */
+export type StreamNotification = z.infer<typeof streamNotificationSchema>;
+/** SSE 资源失效通知中的单个资源。 */
+export type StreamResource = StreamNotification['resources'][number];
+
 /** 校验当前健康快照读取响应。 */
 export const statusResponseSchema = z.object({
   ok: z.literal(true),

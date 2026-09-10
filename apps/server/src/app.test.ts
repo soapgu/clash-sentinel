@@ -1,6 +1,8 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { AddressInfo } from 'node:net';
+import { once } from 'node:events';
 import { afterEach, expect, test, vi } from 'vitest';
 import request from 'supertest';
 import type {
@@ -8,11 +10,13 @@ import type {
   HealthSnapshot,
   LegacyStatus,
   MonitoringSnapshot,
+  StreamNotification,
 } from '@clash-sentinel/shared';
 import { createApp } from './app.js';
 import { LegacyAdapterError } from './legacy/adapter.js';
 import { TaskService, type LegacyOperations } from './services/task-service.js';
 import { OperationCoordinator } from './services/operation-coordinator.js';
+import { StatusNotificationCenter } from './services/status-notifier.js';
 import { SqliteStore } from './storage/store.js';
 
 /** 当前测试创建且需要关闭、清理的隔离运行时。 */
@@ -20,12 +24,14 @@ const setups: Array<{
   root: string;
   store: SqliteStore;
   taskService: TaskService;
+  notifier: StatusNotificationCenter;
 }> = [];
 
 afterEach(async () => {
   for (const setup of setups.splice(0)) {
     setup.taskService.stopAccepting();
     await setup.taskService.waitForIdle();
+    setup.notifier.close();
     setup.store.close();
     await rm(setup.root, { recursive: true, force: true });
   }
@@ -112,9 +118,12 @@ async function createSetup(overrides: Partial<LegacyOperations> = {}) {
     ...overrides,
   };
   const coordinator = new OperationCoordinator();
+  const notifier = new StatusNotificationCenter(
+    () => new Date('2026-09-09T04:00:00.000Z'),
+  );
   const healthCheck = {
-    run: vi.fn(async () =>
-      store.upsertHealthSnapshot({
+    run: vi.fn(async () => {
+      const snapshot = store.upsertHealthSnapshot({
         status: 'healthy',
         profile: legacyStatus().profile,
         lock: legacyStatus().lock,
@@ -125,14 +134,24 @@ async function createSetup(overrides: Partial<LegacyOperations> = {}) {
         autoSwitchCooldownUntil:
           store.getHealthSnapshot()?.autoSwitchCooldownUntil ?? null,
         updatedAt: '2026-09-08T04:00:00.000Z',
-      }),
-    ),
+      });
+      return {
+        snapshot,
+        changes: {
+          statusUpdated: true,
+          sitesUpdated: true,
+          candidatesUpdated: false,
+          eventAppended: false,
+        },
+      };
+    }),
   };
   const taskService = new TaskService({
     store,
     adapter,
     healthCheck,
     coordinator,
+    notifier,
   });
   const scheduler = {
     getSnapshot: vi.fn<() => MonitoringSnapshot>(() => ({
@@ -143,20 +162,37 @@ async function createSetup(overrides: Partial<LegacyOperations> = {}) {
       nextRunAt: null,
     })),
   };
-  setups.push({ root, store, taskService });
+  setups.push({ root, store, taskService, notifier });
   return {
     store,
     adapter,
     coordinator,
     taskService,
     scheduler,
+    notifier,
     app: createApp({
       store,
       taskService,
       scheduler,
+      notifier,
       logger: () => undefined,
     }),
   };
+}
+
+/** 累积读取 SSE 文本直到出现目标内容。 */
+async function readStreamUntil(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  expected: string,
+): Promise<string> {
+  const decoder = new TextDecoder();
+  let output = '';
+  while (!output.includes(expected)) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    output += decoder.decode(chunk.value, { stream: true });
+  }
+  return output;
 }
 
 test('健康、空快照和固定站点接口遵守只读契约', async () => {
@@ -239,6 +275,84 @@ test('定时监测接口返回内存快照且重复读取没有副作用', async
   expect(setup.store.countEvents()).toBe(0);
 });
 
+test('SSE 建连同步、保活且不受普通 API 超时限制', async () => {
+  const setup = await createSetup();
+  const streamApp = createApp({
+    store: setup.store,
+    taskService: setup.taskService,
+    scheduler: setup.scheduler,
+    notifier: setup.notifier,
+    requestTimeoutMs: 5,
+    streamHeartbeatMs: 10,
+    logger: () => undefined,
+  });
+  const server = streamApp.listen(0, '127.0.0.1');
+  try {
+    await once(server, 'listening');
+    const address = server.address() as AddressInfo;
+    const controller = new AbortController();
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/stream`,
+      {
+        headers: { 'Last-Event-ID': '999' },
+        signal: controller.signal,
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    expect(response.headers.get('cache-control')).toBe(
+      'no-cache, no-transform',
+    );
+    expect(response.headers.get('x-accel-buffering')).toBe('no');
+    const reader = response.body!.getReader();
+    const initial = await readStreamUntil(reader, '\n\n');
+    expect(initial).toContain('event: invalidate');
+    expect(initial).toContain('"reason":"sync"');
+    expect(initial).not.toContain('999');
+
+    const heartbeat = await readStreamUntil(reader, ': keepalive');
+    expect(heartbeat).toContain(': keepalive');
+    setup.notifier.publish('monitoring_started', ['monitoring']);
+    const update = await readStreamUntil(reader, 'monitoring_started');
+    expect(update).toContain('event: invalidate');
+    expect(update).toContain('"resources":["monitoring"]');
+    await reader.cancel();
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(setup.notifier.getSubscriberCount()).toBe(0);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('SSE 多客户端隔离且通知中心关闭会结束全部长连接', async () => {
+  const setup = await createSetup();
+  const server = setup.app.listen(0, '127.0.0.1');
+  try {
+    await once(server, 'listening');
+    const address = server.address() as AddressInfo;
+    const url = `http://127.0.0.1:${address.port}/api/stream`;
+    const [firstResponse, secondResponse] = await Promise.all([
+      fetch(url),
+      fetch(url),
+    ]);
+    const first = firstResponse.body!.getReader();
+    const second = secondResponse.body!.getReader();
+    expect(await readStreamUntil(first, '\n\n')).toContain('"reason":"sync"');
+    expect(await readStreamUntil(second, '\n\n')).toContain('"reason":"sync"');
+    expect(setup.notifier.getSubscriberCount()).toBe(2);
+
+    setup.notifier.close();
+    expect((await first.read()).done).toBe(true);
+    expect((await second.read()).done).toBe(true);
+    expect(setup.notifier.getSubscriberCount()).toBe(0);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test('站点接口动态标记过期且定时检测占槽时拒绝手动动作', async () => {
   const setup = await createSetup();
   setup.store.appendSiteResult({
@@ -255,6 +369,7 @@ test('站点接口动态标记过期且定时检测占槽时拒绝手动动作',
     store: setup.store,
     taskService: setup.taskService,
     scheduler: setup.scheduler,
+    notifier: setup.notifier,
     now: () => Date.parse('2026-09-09T04:02:00.001Z'),
     logger: () => undefined,
   });
@@ -306,6 +421,9 @@ test('任务路径和未知 API 使用统一错误结构', async () => {
 
 test('设置完整更新并校验自动切换锁定和订阅', async () => {
   const setup = await createSetup();
+  const notifications: StreamNotification[] = [];
+  setup.notifier.subscribe((notification) => notifications.push(notification));
+  notifications.length = 0;
   const base = {
     checkIntervalMs: 60_000,
     requestTimeoutMs: 5_000,
@@ -360,6 +478,7 @@ test('设置完整更新并校验自动切换锁定和订阅', async () => {
     .put('/api/settings')
     .send({ ...base, extraPath: '/private/secret' })
     .expect(400);
+  expect(notifications).toEqual([]);
 });
 
 test('诊断和 apply 异步执行并持久化任务结果', async () => {
@@ -380,6 +499,57 @@ test('诊断和 apply 异步执行并持久化任务结果', async () => {
   expect(task.body.data.task.status).toBe('succeeded');
   expect(setup.adapter.applyIp).toHaveBeenCalledWith('198.51.100.20');
   expect(setup.store.getHealthSnapshot()?.status).toBe('unknown');
+});
+
+test('任务生命周期按动作类型发布精确资源失效通知', async () => {
+  const setup = await createSetup();
+  const notifications: StreamNotification[] = [];
+  setup.notifier.subscribe((notification) => notifications.push(notification));
+  notifications.length = 0;
+  const cases = [
+    {
+      path: 'health-check',
+      body: {},
+      resources: ['status', 'sites', 'events'],
+    },
+    { path: 'diagnose', body: {}, resources: ['candidates', 'events'] },
+    {
+      path: 'apply',
+      body: { ip: '198.51.100.20' },
+      resources: ['status', 'events'],
+    },
+    {
+      path: 'reset',
+      body: {},
+      resources: ['status', 'settings', 'events'],
+    },
+    { path: 'rollback', body: {}, resources: ['status', 'events'] },
+  ];
+  for (const item of cases) {
+    notifications.length = 0;
+    const response = await request(setup.app.callback())
+      .post(`/api/actions/${item.path}`)
+      .send(item.body)
+      .expect(202);
+    await setup.taskService.waitForIdle();
+    const taskResource = `task:${response.body.data.taskId}`;
+    expect(
+      notifications.map(({ reason, resources }) => ({ reason, resources })),
+    ).toEqual([
+      { reason: 'task_queued', resources: [taskResource] },
+      { reason: 'task_started', resources: [taskResource] },
+      {
+        reason: 'task_succeeded',
+        resources: [taskResource, ...item.resources],
+      },
+    ]);
+    if (item.path === 'health-check') {
+      const stored = setup.store.getTask(response.body.data.taskId)!;
+      expect(stored.result).toMatchObject({ status: 'healthy' });
+      expect(stored.result).not.toHaveProperty('snapshot');
+      expect(stored.result).not.toHaveProperty('changes');
+    }
+  }
 });
 
 test('apply 拒绝无诊断、非法候选和注入输入', async () => {
@@ -429,6 +599,9 @@ test('后台稳定错误写入失败任务且 reset 关闭自动切换', async (
       throw new LegacyAdapterError('NO_BACKUP', '没有可回滚的成功应用');
     }),
   });
+  const notifications: StreamNotification[] = [];
+  setup.notifier.subscribe((notification) => notifications.push(notification));
+  notifications.length = 0;
   const rollback = await request(setup.app.callback())
     .post('/api/actions/rollback')
     .send({});
@@ -436,6 +609,10 @@ test('后台稳定错误写入失败任务且 reset 关闭自动切换', async (
   expect(setup.store.getTask(rollback.body.data.taskId)).toMatchObject({
     status: 'failed',
     errorCode: 'NO_BACKUP',
+  });
+  expect(notifications.at(-1)).toMatchObject({
+    reason: 'task_failed',
+    resources: [`task:${rollback.body.data.taskId}`, 'events'],
   });
   setup.store.upsertHealthSnapshot({
     status: 'healthy',
@@ -475,6 +652,7 @@ test('非法 JSON、请求超时和内部异常不泄露原文', async () => {
     store: setup.store,
     taskService: setup.taskService,
     scheduler: setup.scheduler,
+    notifier: setup.notifier,
     requestTimeoutMs: 5,
     logger: () => undefined,
   });
