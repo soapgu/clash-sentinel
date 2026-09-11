@@ -28,6 +28,7 @@ import {
 } from '@clash-sentinel/shared';
 import { DEFAULT_PROJECT_ROOT } from '../project-paths.js';
 import { runMigrations } from './migrations.js';
+import { noopLogger, type AppLogger } from '../logging.js';
 
 /** 每个站点保留的历史结果数量。 */
 export const SITE_HISTORY_LIMIT = 1_000;
@@ -44,6 +45,10 @@ export interface SqliteStoreOptions {
   databasePath?: string;
   /** 默认数据库路径使用的项目根目录；测试或嵌入场景可覆盖。 */
   projectRoot?: string;
+  /** 记录数据库打开、恢复、关闭和初始化失败。 */
+  logger?: AppLogger;
+  /** 是否在写入前移除敏感键、订阅正文和本机路径。 */
+  redactSensitiveData?: boolean;
 }
 
 /** 解析稳定且不依赖进程 cwd 的 SQLite 文件路径。 */
@@ -139,12 +144,20 @@ function toEpoch(value: string) {
  * @param seen 用于拒绝循环引用的对象集合。
  * @returns 可安全 JSON 序列化的值。
  */
-function sanitizeJson(value: unknown, seen = new WeakSet<object>()): unknown {
+function normalizeJson(
+  value: unknown,
+  redactSensitiveData: boolean,
+  seen = new WeakSet<object>(),
+): unknown {
   if (value === null || typeof value === 'boolean' || typeof value === 'number')
     return value;
   if (typeof value === 'string') {
-    if (/^\s*proxies\s*:/m.test(value) || /^\s*proxy-groups\s*:/m.test(value))
+    if (
+      redactSensitiveData &&
+      (/^\s*proxies\s*:/m.test(value) || /^\s*proxy-groups\s*:/m.test(value))
+    )
       return '[订阅内容已脱敏]';
+    if (!redactSensitiveData) return value;
     if (ABSOLUTE_LOCAL_PATH.test(value)) return '[路径已脱敏]';
     return value.replace(LOCAL_PATH, '[路径已脱敏]');
   }
@@ -154,12 +167,13 @@ function sanitizeJson(value: unknown, seen = new WeakSet<object>()): unknown {
     throw new StorageError('SERIALIZATION', '扩展数据不能包含循环引用');
   seen.add(value);
   if (Array.isArray(value))
-    return value.map((item) => sanitizeJson(item, seen));
+    return value.map((item) => normalizeJson(item, redactSensitiveData, seen));
   const output: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value))
-    output[key] = SENSITIVE_KEY.test(key)
-      ? '[敏感字段已脱敏]'
-      : sanitizeJson(item, seen);
+    output[key] =
+      redactSensitiveData && SENSITIVE_KEY.test(key)
+        ? '[敏感字段已脱敏]'
+        : normalizeJson(item, redactSensitiveData, seen);
   return output;
 }
 
@@ -169,9 +183,12 @@ function sanitizeJson(value: unknown, seen = new WeakSet<object>()): unknown {
  * @param value 可选结构化数据。
  * @returns 可写入 SQLite 的 JSON 文本或 null。
  */
-function encodeJson(value: StoredJsonObject | null | undefined) {
+function encodeJson(
+  value: StoredJsonObject | null | undefined,
+  redactSensitiveData: boolean,
+) {
   if (value === null || value === undefined) return null;
-  const encoded = JSON.stringify(sanitizeJson(value));
+  const encoded = JSON.stringify(normalizeJson(value, redactSensitiveData));
   if (Buffer.byteLength(encoded, 'utf8') > STORED_JSON_LIMIT)
     throw new StorageError('SERIALIZATION', '扩展数据超过 32 KiB 上限');
   return encoded;
@@ -195,6 +212,8 @@ function decodeJson(value: unknown): StoredJsonObject | null {
 /** 提供同步、事务化且可关闭的 Clash Sentinel SQLite 数据访问门面。 */
 export class SqliteStore {
   private readonly database: Database.Database;
+  private readonly logger: AppLogger;
+  private readonly redactSensitiveData: boolean;
 
   /**
    * 打开数据库、配置连接、执行迁移并写入缺失的默认策略。
@@ -202,22 +221,36 @@ export class SqliteStore {
    * @param options 可选数据库路径配置。
    */
   constructor(options: SqliteStoreOptions = {}) {
+    this.logger = options.logger ?? noopLogger;
+    this.redactSensitiveData = options.redactSensitiveData ?? true;
     const path = resolveDatabasePath(options);
-    if (path !== ':memory:')
-      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    this.database = new Database(path);
-    this.database.pragma('foreign_keys = ON');
-    this.database.pragma('journal_mode = WAL');
-    this.database.pragma('busy_timeout = 5000');
-    this.database.pragma('synchronous = NORMAL');
-    runMigrations(this.database);
-    this.ensureDefaultSettings();
-    this.recoverInterruptedTasks();
+    try {
+      if (path !== ':memory:')
+        mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      this.database = new Database(path);
+      this.database.pragma('foreign_keys = ON');
+      this.database.pragma('journal_mode = WAL');
+      this.database.pragma('busy_timeout = 5000');
+      this.database.pragma('synchronous = NORMAL');
+      runMigrations(this.database);
+      this.ensureDefaultSettings();
+      const recoveredTasks = this.recoverInterruptedTasks();
+      this.logger.info('storage:sqlite', 'database opened', {
+        inMemory: path === ':memory:',
+        recoveredTasks,
+      });
+    } catch (error) {
+      this.logger.error('storage:sqlite', 'database initialization failed', {
+        error,
+      });
+      throw error;
+    }
   }
 
   /** 关闭数据库连接并释放文件句柄。 */
   close() {
     this.database.close();
+    this.logger.info('storage:sqlite', 'database closed');
   }
 
   /**
@@ -543,7 +576,7 @@ export class SqliteStore {
         VALUES (?, ?, 'queued', ?, ?)
       `,
       )
-      .run(id, validType, Date.now(), encodeJson(input));
+      .run(id, validType, Date.now(), this.encodeJson(input));
     return this.getTask(id)!;
   }
 
@@ -573,7 +606,7 @@ export class SqliteStore {
     this.transitionTask(
       id,
       "UPDATE tasks SET status = 'succeeded', finished_at = ?, result_json = ? WHERE id = ? AND status = 'running'",
-      [Date.now(), encodeJson(result), id],
+      [Date.now(), this.encodeJson(result), id],
     );
     return this.getTask(id)!;
   }
@@ -684,7 +717,7 @@ export class SqliteStore {
           candidate.severity,
           candidate.retention,
           candidate.summary,
-          encodeJson(candidate.details),
+          this.encodeJson(candidate.details),
           candidate.taskId,
           candidate.profileUid,
           toEpoch(candidate.occurredAt),
@@ -886,7 +919,12 @@ export class SqliteStore {
 
   /** 清除面向用户文本中的本机路径和完整订阅片段。 */
   private sanitizeText(value: string) {
-    const sanitized = sanitizeJson(value);
+    const sanitized = normalizeJson(value, this.redactSensitiveData);
     return typeof sanitized === 'string' ? sanitized : '[内容已脱敏]';
+  }
+
+  /** 按当前实例的策略校验、可选脱敏并编码扩展 JSON。 */
+  private encodeJson(value: StoredJsonObject | null | undefined) {
+    return encodeJson(value, this.redactSensitiveData);
   }
 }

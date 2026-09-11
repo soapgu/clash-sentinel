@@ -31,7 +31,6 @@ describe('服务端项目路径', () => {
     expect(paths.legacyReportDir).toBe(
       join(DEFAULT_PROJECT_ROOT, 'reports/legacy'),
     );
-    expect(paths.legacyLogDir).toBe(join(DEFAULT_PROJECT_ROOT, 'logs/legacy'));
     expect(existsSync(paths.legacyScriptPath)).toBe(true);
   });
 
@@ -45,7 +44,6 @@ describe('服务端项目路径', () => {
         CLASH_ENTRY_STATE_DIR: 'custom/state',
         CLASH_ENTRY_REPORT_DIR: 'custom/reports',
         CLASH_ENTRY_BACKUP_DIR: 'custom/backups',
-        CLASH_SENTINEL_LEGACY_LOG_DIR: 'custom/logs',
         CLASH_RUNTIME_CONFIG: 'custom/runtime.yaml',
       },
       root,
@@ -58,7 +56,6 @@ describe('服务端项目路径', () => {
       legacyStateDir: `${root}/custom/state`,
       legacyReportDir: `${root}/custom/reports`,
       legacyBackupDir: `${root}/custom/backups`,
-      legacyLogDir: `${root}/custom/logs`,
       runtimeConfigPath: `${root}/custom/runtime.yaml`,
     });
   });

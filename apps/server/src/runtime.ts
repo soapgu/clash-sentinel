@@ -8,6 +8,8 @@ import { OperationCoordinator } from './services/operation-coordinator.js';
 import { StatusNotificationCenter } from './services/status-notifier.js';
 import { TaskService } from './services/task-service.js';
 import { SqliteStore } from './storage/store.js';
+import { createAppLogger, type AppLogger } from './logging.js';
+import { loadServerConfig, type ServerConfig } from './config.js';
 
 /** 生产 Koa 应用和退出流程共同持有的运行时依赖。 */
 export interface RuntimeDependencies {
@@ -21,6 +23,8 @@ export interface RuntimeDependencies {
   notifier: StatusNotificationCenter;
   /** 关闭时需要释放连接池的 HTTP 探测器。 */
   siteProbe: UndiciSiteProbe;
+  /** 服务端全部模块共享的自然文本日志器。 */
+  logger: AppLogger;
 }
 
 /**
@@ -33,10 +37,17 @@ export interface RuntimeDependencies {
 export function createRuntimeDependencies(
   environment: NodeJS.ProcessEnv = process.env,
   projectRoot = DEFAULT_PROJECT_ROOT,
+  config: ServerConfig = loadServerConfig(environment, projectRoot),
+  logger: AppLogger = createAppLogger({
+    environment,
+    redactSensitiveData: config.logging.redactSensitiveData,
+  }),
 ): RuntimeDependencies {
   const paths = resolveRuntimePaths(environment, projectRoot);
   const store = new SqliteStore({
     databasePath: paths.databasePath,
+    logger,
+    redactSensitiveData: config.storage.redactSensitiveData,
   });
   const adapter = new LegacyAdapter({
     scriptPath: paths.legacyScriptPath,
@@ -44,17 +55,18 @@ export function createRuntimeDependencies(
     stateDir: paths.legacyStateDir,
     reportDir: paths.legacyReportDir,
     backupDir: paths.legacyBackupDir,
-    logDir: paths.legacyLogDir,
     environment,
+    logger,
   });
   const coordinator = new OperationCoordinator();
-  const notifier = new StatusNotificationCenter();
+  const notifier = new StatusNotificationCenter(() => new Date(), logger);
   const siteProbe = new UndiciSiteProbe();
   const healthCheck = new HealthCheckService({
     store,
     siteProbe,
     proxyConfig: new ClashProxyConfig(paths.runtimeConfigPath),
     legacy: adapter,
+    logger,
   });
   const taskService = new TaskService({
     store,
@@ -62,6 +74,7 @@ export function createRuntimeDependencies(
     healthCheck,
     coordinator,
     notifier,
+    logger,
   });
   return {
     store,
@@ -71,8 +84,10 @@ export function createRuntimeDependencies(
       coordinator,
       healthCheck,
       notifier,
+      logger,
     }),
     notifier,
     siteProbe,
+    logger,
   };
 }

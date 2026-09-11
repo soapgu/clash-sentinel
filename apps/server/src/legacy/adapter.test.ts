@@ -3,7 +3,6 @@ import {
   mkdir,
   mkdtemp,
   readFile,
-  readdir,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -12,6 +11,7 @@ import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 import { DEFAULT_PROJECT_ROOT } from '../project-paths.js';
 import { LegacyAdapter, LegacyAdapterError } from './adapter.js';
+import { noopLogger } from '../logging.js';
 
 const legacyScript = resolve(
   DEFAULT_PROJECT_ROOT,
@@ -38,7 +38,6 @@ async function fixture() {
   const stateDir = join(root, 'state');
   const reportDir = join(root, 'reports');
   const backupDir = join(root, 'backups');
-  const logDir = join(root, 'logs');
   await Promise.all([
     mkdir(join(appDir, 'profiles'), { recursive: true }),
     mkdir(binDir, { recursive: true }),
@@ -158,7 +157,6 @@ printf '%s' "$code"
       stateDir,
       reportDir,
       backupDir,
-      logDir,
       environment: {
         PATH: `${binDir}:${process.env.PATH ?? ''}`,
         CLASH_ENTRY_SAMPLE_PORTS: '2',
@@ -168,7 +166,7 @@ printf '%s' "$code"
         ...environment,
       },
     });
-  return { root, appDir, stateDir, logDir, raw, adapter };
+  return { root, appDir, stateDir, raw, adapter };
 }
 
 async function expectCode(promise: Promise<unknown>, code: string) {
@@ -344,7 +342,7 @@ describe('LegacyAdapter', () => {
     );
   });
 
-  test('超时终止整个进程组且异常输出会脱敏保存', async () => {
+  test('超时终止整个进程组且控制台摘要不包含异常输出', async () => {
     const setup = await fixture();
     const pidFile = join(setup.root, 'child.pid');
     const timeoutScript = join(setup.root, 'timeout.sh');
@@ -358,7 +356,6 @@ describe('LegacyAdapter', () => {
       stateDir: setup.stateDir,
       reportDir: join(setup.root, 'reports'),
       backupDir: join(setup.root, 'backups'),
-      logDir: setup.logDir,
       environment: { PID_FILE: pidFile },
       timeouts: { status: 50 },
       terminateGraceMs: 50,
@@ -379,17 +376,23 @@ describe('LegacyAdapter', () => {
       stateDir: setup.stateDir,
       reportDir: join(setup.root, 'reports'),
       backupDir: join(setup.root, 'backups'),
-      logDir: setup.logDir,
+      logger: {
+        ...noopLogger,
+        error: (_scope, _message, metadata) => logs.push(metadata ?? {}),
+      },
     });
+    const logs: Record<string, unknown>[] = [];
     await expectCode(failedAdapter.getStatus(), 'PROCESS_EXITED');
-    const logs = await readdir(setup.logDir);
-    const content = (
-      await Promise.all(
-        logs.map((file) => readFile(join(setup.logDir, file), 'utf8')),
-      )
-    ).join('\n');
+    const content = JSON.stringify(logs);
     expect(content).not.toContain(setup.appDir);
     expect(content).not.toContain('token-value');
-    expect(content).toContain('[路径已脱敏]');
+    expect(logs).toEqual([
+      expect.objectContaining({
+        command: 'status',
+        errorCode: 'PROCESS_EXITED',
+        exitCode: 7,
+        stderrBytes: expect.any(Number),
+      }),
+    ]);
   });
 });

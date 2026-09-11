@@ -19,7 +19,6 @@ export interface RuntimePaths {
   legacyStateDir: string;
   legacyReportDir: string;
   legacyBackupDir: string;
-  legacyLogDir: string;
   runtimeConfigPath: string;
 }
 
@@ -65,10 +64,6 @@ export function resolveRuntimePaths(
     legacyBackupDir: environment.CLASH_ENTRY_BACKUP_DIR
       ? fromProjectRoot(root, environment.CLASH_ENTRY_BACKUP_DIR)
       : resolve(appDir, 'entry-ip-backups'),
-    legacyLogDir: fromProjectRoot(
-      root,
-      environment.CLASH_SENTINEL_LEGACY_LOG_DIR || 'logs/legacy',
-    ),
     runtimeConfigPath: environment.CLASH_RUNTIME_CONFIG
       ? fromProjectRoot(root, environment.CLASH_RUNTIME_CONFIG)
       : resolve(appDir, 'clash-verge.yaml'),

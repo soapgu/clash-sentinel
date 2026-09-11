@@ -1,0 +1,5 @@
+logging:
+  redactSensitiveData: true
+
+storage:
+  redactSensitiveData: true

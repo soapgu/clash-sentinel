@@ -8,6 +8,8 @@ import type { SqliteStore } from '../../storage/store.js';
 import type { LegacyAdapter } from '../../legacy/adapter.js';
 import type { ClashProxyConfig } from './proxy-config.js';
 import type { SiteProbe } from './site-probe.js';
+import { randomUUID } from 'node:crypto';
+import { noopLogger, type AppLogger } from '../../logging.js';
 
 /** 服务端固定且不可由 API 覆盖的六个健康探测目标。 */
 export const HEALTH_TARGETS = {
@@ -37,6 +39,8 @@ export interface HealthCheckServiceOptions {
   legacy: HealthLegacyOperations;
   /** 测试可注入的当前时间。 */
   now?: () => Date;
+  /** 记录健康检测摘要和状态变化。 */
+  logger?: AppLogger;
 }
 
 /** 完整健康检测的调用来源。 */
@@ -59,10 +63,12 @@ export interface HealthCheckExecution {
 /** 编排六站探测、入口判断、诊断持久化和综合快照。 */
 export class HealthCheckService {
   private readonly now: () => Date;
+  private readonly logger: AppLogger;
 
   /** 使用隔离探测器、Legacy 能力和 SQLite 创建编排器。 */
   constructor(private readonly options: HealthCheckServiceOptions) {
     this.now = options.now ?? (() => new Date());
+    this.logger = options.logger ?? noopLogger;
   }
 
   /**
@@ -71,7 +77,34 @@ export class HealthCheckService {
    * @param source 手动任务或定时调度来源。
    * @returns 已持久化的综合健康快照。
    */
-  async run(source: HealthCheckSource): Promise<HealthCheckExecution> {
+  async run(
+    source: HealthCheckSource,
+    runId: string = randomUUID(),
+  ): Promise<HealthCheckExecution> {
+    const startedAt = Date.now();
+    this.logger.info('health:check', 'started', { source, runId });
+    try {
+      return await this.execute(source, runId, startedAt);
+    } catch (error) {
+      this.logger.error('health:check', 'failed', {
+        source,
+        runId,
+        durationMs: Date.now() - startedAt,
+        errorCode:
+          error instanceof Error && 'code' in error
+            ? String(error.code)
+            : 'INTERNAL_ERROR',
+      });
+      throw error;
+    }
+  }
+
+  /** 执行检测主体并记录成功摘要。 */
+  private async execute(
+    source: HealthCheckSource,
+    runId: string,
+    startedAt: number,
+  ): Promise<HealthCheckExecution> {
     const changes: HealthCheckChanges = {
       statusUpdated: false,
       sitesUpdated: false,
@@ -112,6 +145,15 @@ export class HealthCheckService {
       proxyPromise,
     ]);
     for (const result of [...directResults, ...proxyResults])
+      this.logger.debug('health:check', 'site checked', {
+        runId,
+        target: result.target,
+        reachable: result.reachable,
+        httpStatus: result.httpStatus,
+        durationMs: result.durationMs,
+        errorType: result.errorType,
+      });
+    for (const result of [...directResults, ...proxyResults])
       this.options.store.appendSiteResult(result);
     changes.sitesUpdated = true;
 
@@ -141,11 +183,34 @@ export class HealthCheckService {
       );
       changes.candidatesUpdated = true;
     }
-    if (source === 'scheduled' && previous?.status !== saved.status)
+    if (source === 'scheduled' && previous?.status !== saved.status) {
       changes.eventAppended = this.appendTransitionEventSafely(
         previous?.status ?? null,
         saved,
       );
+      this.logger.info('health:check', 'status changed', {
+        runId,
+        previousStatus: previous?.status ?? null,
+        currentStatus: saved.status,
+        eventAppended: changes.eventAppended,
+      });
+    }
+    const changedResources: string[] = [];
+    if (changes.statusUpdated) changedResources.push('status');
+    if (changes.sitesUpdated) changedResources.push('sites');
+    if (changes.candidatesUpdated) changedResources.push('candidates');
+    if (changes.eventAppended) changedResources.push('events');
+    this.logger.info('health:check', 'completed', {
+      source,
+      runId,
+      status: saved.status,
+      reachableSites: [...directResults, ...proxyResults].filter(
+        (item) => item.reachable,
+      ).length,
+      totalSites: directResults.length + proxyResults.length,
+      durationMs: Date.now() - startedAt,
+      changedResources,
+    });
     return { snapshot: saved, changes };
   }
 
@@ -153,7 +218,13 @@ export class HealthCheckService {
   private async readStatusSafely(): Promise<LegacyStatus | null> {
     try {
       return await this.options.legacy.getStatus();
-    } catch {
+    } catch (error) {
+      this.logger.warn('health:check', 'status read failed', {
+        errorCode:
+          error instanceof Error && 'code' in error
+            ? String(error.code)
+            : 'INTERNAL_ERROR',
+      });
       return null;
     }
   }
@@ -237,7 +308,11 @@ export class HealthCheckService {
         occurredAt: snapshot.updatedAt,
       });
       return true;
-    } catch {
+    } catch (error) {
+      this.logger.warn('health:check', 'status event append failed', {
+        currentStatus: snapshot.status,
+        error,
+      });
       // 状态变化事件属于辅助审计，失败不能反转已保存的健康结果。
       return false;
     }

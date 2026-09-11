@@ -7,6 +7,7 @@ import type {
   DiagnosisResult,
   HealthSnapshot,
   SiteResult,
+  StoredJsonObject,
 } from '@clash-sentinel/shared';
 import { migrations, runMigrations, type Migration } from './migrations.js';
 import {
@@ -353,5 +354,87 @@ describe('SqliteStore', () => {
       '/Users/example',
     ])
       expect(raw).not.toContain(forbidden);
+  });
+
+  test('关闭脱敏后新任务、事件和错误文本保持原值且重开不改写历史', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'clash-sentinel-storage-raw-'));
+    temporaryRoots.push(root);
+    const databasePath = join(root, 'clash-sentinel.db');
+    const store = new SqliteStore({
+      databasePath,
+      redactSensitiveData: false,
+    });
+    const queued = store.createTask('apply', {
+      controllerSecret: 'super-secret',
+      path: '/Users/example/private.yaml',
+      payload: 'proxies:\n- name: secret-node',
+    });
+    const completed = store.startTask(store.createTask('diagnose').id);
+    store.completeTask(completed.id, { apiToken: 'result-token' });
+    const failed = store.createTask('reset');
+    store.failTask(
+      failed.id,
+      'RESET_FAILED',
+      '读取 /Users/example/private.yaml 时 token=error-secret',
+    );
+    store.appendEvent({
+      type: 'raw_storage_test',
+      severity: 'warning',
+      retention: 'ordinary',
+      summary: '文件 /Users/example/private.yaml 处理失败',
+      details: { password: 'plain-password' },
+    });
+    expect(store.getTask(queued.id)?.input).toEqual({
+      controllerSecret: 'super-secret',
+      path: '/Users/example/private.yaml',
+      payload: 'proxies:\n- name: secret-node',
+    });
+    expect(store.getTask(completed.id)?.result).toEqual({
+      apiToken: 'result-token',
+    });
+    expect(store.getTask(failed.id)?.errorMessage).toContain('error-secret');
+    expect(store.listEvents()[0]).toMatchObject({
+      summary: '文件 /Users/example/private.yaml 处理失败',
+      details: { password: 'plain-password' },
+    });
+    store.close();
+
+    const reopened = new SqliteStore({
+      databasePath,
+      redactSensitiveData: true,
+    });
+    expect(reopened.getTask(queued.id)?.input).toMatchObject({
+      controllerSecret: 'super-secret',
+      path: '/Users/example/private.yaml',
+    });
+    expect(reopened.listEvents()[0]?.details).toEqual({
+      password: 'plain-password',
+    });
+    reopened.close();
+  });
+
+  test('关闭脱敏仍拒绝循环引用、不可序列化值和超限 JSON', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'clash-sentinel-storage-raw-'));
+    temporaryRoots.push(root);
+    const store = new SqliteStore({
+      databasePath: join(root, 'clash-sentinel.db'),
+      redactSensitiveData: false,
+    });
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(() => store.createTask('apply', cyclic as StoredJsonObject)).toThrow(
+      StorageError,
+    );
+    expect(() =>
+      store.createTask('apply', {
+        invalid: BigInt(1),
+      } as unknown as StoredJsonObject),
+    ).toThrow(StorageError);
+    expect(() =>
+      store.createTask('apply', {
+        content: 'x'.repeat(33 * 1024),
+      }),
+    ).toThrow(/32 KiB/);
+    store.close();
   });
 });

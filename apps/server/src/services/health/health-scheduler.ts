@@ -6,6 +6,8 @@ import type { SqliteStore } from '../../storage/store.js';
 import type { OperationCoordinator } from '../operation-coordinator.js';
 import type { StatusNotifier } from '../status-notifier.js';
 import type { HealthCheckService } from './health-check.js';
+import { randomUUID } from 'node:crypto';
+import { noopLogger, type AppLogger } from '../../logging.js';
 
 /** 定时健康检测调度器依赖。 */
 export interface HealthSchedulerOptions {
@@ -19,6 +21,8 @@ export interface HealthSchedulerOptions {
   notifier: StatusNotifier;
   /** 返回当前 Unix 毫秒时间；测试可注入可控时钟。 */
   now?: () => number;
+  /** 记录调度计划、执行、跳过和失败。 */
+  logger?: AppLogger;
 }
 
 /** 启动即检查、按最新设置递归调度且不会重入的健康调度器。 */
@@ -31,10 +35,12 @@ export class HealthScheduler {
   /** 下一次内部调度唤醒时间；暂停时它只用于复查设置，不一定对外公开。 */
   private nextTickAt: string | null = null;
   private readonly now: () => number;
+  private readonly logger: AppLogger;
 
   /** @param options 存储、全局协调器、健康编排器和可选时钟。 */
   constructor(private readonly options: HealthSchedulerOptions) {
     this.now = options.now ?? Date.now;
+    this.logger = options.logger ?? noopLogger;
   }
 
   /**
@@ -63,6 +69,7 @@ export class HealthScheduler {
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
+    this.logger.info('health:scheduler', 'started');
     this.runTick();
   }
 
@@ -73,6 +80,7 @@ export class HealthScheduler {
     this.timer = null;
     this.nextTickAt = null;
     await this.currentRun;
+    this.logger.info('health:scheduler', 'stopped');
   }
 
   /** 尝试占用定时槽；冲突时静默跳过并安排下一周期。 */
@@ -80,20 +88,28 @@ export class HealthScheduler {
     if (this.stopped) return;
     const settings = this.options.store.getSettings();
     if (!settings.monitoringEnabled) {
+      this.logger.debug('health:scheduler', 'monitoring disabled');
       this.schedule(settings.checkIntervalMs);
       return;
     }
     const lease = this.options.coordinator.tryAcquireScheduled();
     if (!lease) {
+      this.logger.warn('health:scheduler', 'run skipped', {
+        reason: 'operation_slot_busy',
+      });
       this.schedule(settings.checkIntervalMs);
       return;
     }
     this.lastStartedAt = new Date(this.now()).toISOString();
+    const runId = randomUUID();
+    const startedAt = this.now();
+    this.logger.info('health:scheduler', 'run started', { runId });
     this.nextTickAt = null;
     this.options.notifier.publish('monitoring_started', ['monitoring']);
     const changedResources: StreamResource[] = ['monitoring'];
+    let failed = false;
     this.currentRun = this.options.healthCheck
-      .run('scheduled')
+      .run('scheduled', runId)
       .then((execution) => {
         if (execution.changes.statusUpdated) changedResources.push('status');
         if (execution.changes.sitesUpdated) changedResources.push('sites');
@@ -101,7 +117,16 @@ export class HealthScheduler {
           changedResources.push('candidates');
         if (execution.changes.eventAppended) changedResources.push('events');
       })
-      .catch(() => {
+      .catch((error) => {
+        failed = true;
+        this.logger.error('health:scheduler', 'run failed', {
+          runId,
+          durationMs: this.now() - startedAt,
+          errorCode:
+            error instanceof Error && 'code' in error
+              ? String(error.code)
+              : 'INTERNAL_ERROR',
+        });
         // 异常前可能已经写入部分站点或健康快照，失败路径保守刷新二者。
         changedResources.push('status', 'sites');
         if (this.appendFailureEvent()) changedResources.push('events');
@@ -113,6 +138,12 @@ export class HealthScheduler {
         if (!this.stopped)
           this.schedule(this.options.store.getSettings().checkIntervalMs);
         this.options.notifier.publish('monitoring_completed', changedResources);
+        if (!failed)
+          this.logger.info('health:scheduler', 'run completed', {
+            runId,
+            durationMs: this.now() - startedAt,
+            changedResources,
+          });
       });
   }
 
@@ -120,6 +151,10 @@ export class HealthScheduler {
   private schedule(delayMs: number): void {
     if (this.stopped) return;
     this.nextTickAt = new Date(this.now() + delayMs).toISOString();
+    this.logger.debug('health:scheduler', 'run scheduled', {
+      nextRunAt: this.nextTickAt,
+      delayMs,
+    });
     this.timer = setTimeout(() => {
       this.timer = null;
       this.nextTickAt = null;
@@ -138,7 +173,10 @@ export class HealthScheduler {
         summary: '定时健康检测失败',
       });
       return true;
-    } catch {
+    } catch (error) {
+      this.logger.warn('health:scheduler', 'failure event append failed', {
+        error,
+      });
       // 调度失败事件不能阻止释放全局槽和后续轮次。
       return false;
     }

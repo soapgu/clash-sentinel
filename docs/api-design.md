@@ -903,10 +903,14 @@ flowchart TD
 | Legacy 状态 | `CLASH_ENTRY_STATE_DIR` | `<project-root>/.state/legacy` |
 | 诊断报告 | `CLASH_ENTRY_REPORT_DIR` | `<project-root>/reports/legacy` |
 | 配置备份 | `CLASH_ENTRY_BACKUP_DIR` | `<Clash目录>/entry-ip-backups` |
-| Legacy 日志 | `CLASH_SENTINEL_LEGACY_LOG_DIR` | `<project-root>/logs/legacy` |
 | SQLite | `CLASH_SENTINEL_DB_PATH` | `<project-root>/.state/clash-sentinel.db` |
+| 服务配置 | `CLASH_SENTINEL_CONFIG` | `<project-root>/config/default.yaml` |
 
 `<project-root>` 由服务端模块位置推导，不依赖 `process.cwd()`；因此从仓库根目录、npm workspace 或编译后的 `dist` 启动时使用相同路径。环境变量中的相对路径同样以该目录为基准，绝对路径保持不变。
+
+服务配置严格包含 `logging.redactSensitiveData` 和 `storage.redactSensitiveData` 两个布尔值，
+仅在启动时读取且不属于公开 API。配置不存在、YAML 非法、字段缺失、类型错误或包含未知字段时，
+启动入口使用默认开启脱敏的临时日志器记录 `configuration load failed` 后以退出码 1 结束。
 
 收到 `SIGINT` 或 `SIGTERM` 后停止调度、HTTP 和新任务，等待当前手动或定时检测结束，关闭 HTTP 连接池，再关闭 SQLite。监听失败也必须关闭数据库。
 
@@ -914,6 +918,8 @@ flowchart TD
 
 - API 没有任何路径、命令名、环境变量或任意参数数组字段。
 - apply 的唯一 Shell 参数来自严格 IPv4 Schema 和当前诊断候选，仍以参数数组、`shell: false` 执行。
-- 请求日志不记录查询原文、请求体、响应体、原始异常或堆栈。
-- 任务结果和事件继续使用存储层递归敏感键过滤、订阅正文识别、本机路径脱敏和 32 KiB 限制。
+- 服务端使用 Winston Console Transport 输出 `[时间] [级别] 模块:子模块 内容` 自然文本；不创建应用日志文件。
+- 默认配置下，请求日志不记录查询原文、请求体、响应体、认证信息或完整业务对象；内部错误仅在负责处理的边界输出脱敏摘要和堆栈。显式关闭日志脱敏会保留字段、URL、路径和堆栈原文，应仅用于受控诊断。
+- Legacy 命令日志只记录命令类别、耗时、退出码和输出字节数，不记录 stdout 或 stderr 正文。
+- 存储脱敏默认对任务结果和事件使用递归敏感键过滤、订阅正文识别及本机路径替换；关闭时只对新写入保留原值，不改写历史。两种模式都保留 Schema、可序列化性和 32 KiB 限制。
 - API 预检查用于快速拒绝，不替代 LegacyAdapter 的执行时安全检查。

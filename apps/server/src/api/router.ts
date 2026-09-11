@@ -25,6 +25,7 @@ import type { SqliteStore } from '../storage/store.js';
 import type { TaskService } from '../services/task-service.js';
 import type { StatusNotificationCenter } from '../services/status-notifier.js';
 import { ApiError } from './errors.js';
+import { noopLogger, type AppLogger } from '../logging.js';
 
 /** API 路由访问持久化数据和异步任务服务所需的依赖。 */
 export interface ApiRouterOptions {
@@ -36,6 +37,8 @@ export interface ApiRouterOptions {
   scheduler: Pick<HealthScheduler, 'getSnapshot'>;
   /** 当前进程中的 SSE 通知和连接生命周期中心。 */
   notifier: Pick<StatusNotificationCenter, 'subscribe'>;
+  /** HTTP、设置和 SSE 生命周期使用的统一日志器。 */
+  logger?: AppLogger;
   /** 测试站点过期边界时可注入的 Unix 毫秒时钟。 */
   now?: () => number;
   /** SSE 保活周期；生产默认 15 秒，测试可缩短。 */
@@ -64,6 +67,7 @@ function requestBody(ctx: Context): unknown {
 export function createApiRouter(options: ApiRouterOptions) {
   const { store, taskService, scheduler, notifier } = options;
   const now = options.now ?? Date.now;
+  const logger = options.logger ?? noopLogger;
   const streamHeartbeatMs = options.streamHeartbeatMs ?? 15_000;
   const router = new Router();
 
@@ -98,6 +102,10 @@ export function createApiRouter(options: ApiRouterOptions) {
       if (heartbeat) clearInterval(heartbeat);
       heartbeat = null;
       unsubscribe();
+      logger.debug('sse:stream', 'disconnected', {
+        requestId: ctx.state.requestId,
+        durationMs: now() - connectedAt,
+      });
       if (!ctx.res.destroyed && !ctx.res.writableEnded) ctx.res.end();
     };
     const writeNotification = (notification: StreamNotification) => {
@@ -108,6 +116,7 @@ export function createApiRouter(options: ApiRouterOptions) {
       }
     };
 
+    const connectedAt = now();
     ctx.req.setTimeout(0);
     ctx.status = 200;
     ctx.set('Content-Type', 'text/event-stream; charset=utf-8');
@@ -116,6 +125,9 @@ export function createApiRouter(options: ApiRouterOptions) {
     ctx.set('X-Accel-Buffering', 'no');
     ctx.respond = false;
     ctx.res.flushHeaders();
+    logger.debug('sse:stream', 'connected', {
+      requestId: ctx.state.requestId,
+    });
     ctx.res.once('close', cleanup);
     ctx.res.once('error', cleanup);
     unsubscribe = notifier.subscribe(writeNotification, cleanup);
@@ -180,43 +192,64 @@ export function createApiRouter(options: ApiRouterOptions) {
   });
 
   router.put('/api/settings', (ctx) => {
-    const input = parseRequest(settingsUpdateSchema, requestBody(ctx));
-    const normalized = input.autoSwitchEnabled
-      ? input
-      : { ...input, autoSwitchProfileUid: null };
-    if (normalized.autoSwitchEnabled) {
-      if (taskService.hasActiveOperation())
-        throw new ApiError(409, 'ACTION_CONFLICT', '已有操作正在执行', {
-          ...taskService.getConflictDetails(),
-        });
-      const snapshot = store.getHealthSnapshot();
-      if (!snapshot?.lock.locked)
-        throw new ApiError(
-          409,
-          'AUTO_SWITCH_REQUIRES_LOCK',
-          '当前入口未锁定，不能开启自动切换',
-        );
-      if (
-        !snapshot.profile ||
-        snapshot.profile.uid !== normalized.autoSwitchProfileUid
-      )
-        throw new ApiError(
-          409,
-          'PROFILE_MISMATCH',
-          '自动切换绑定订阅与当前订阅不一致',
-        );
+    try {
+      const input = parseRequest(settingsUpdateSchema, requestBody(ctx));
+      const normalized = input.autoSwitchEnabled
+        ? input
+        : { ...input, autoSwitchProfileUid: null };
+      if (normalized.autoSwitchEnabled) {
+        if (taskService.hasActiveOperation())
+          throw new ApiError(409, 'ACTION_CONFLICT', '已有操作正在执行', {
+            ...taskService.getConflictDetails(),
+          });
+        const snapshot = store.getHealthSnapshot();
+        if (!snapshot?.lock.locked)
+          throw new ApiError(
+            409,
+            'AUTO_SWITCH_REQUIRES_LOCK',
+            '当前入口未锁定，不能开启自动切换',
+          );
+        if (
+          !snapshot.profile ||
+          snapshot.profile.uid !== normalized.autoSwitchProfileUid
+        )
+          throw new ApiError(
+            409,
+            'PROFILE_MISMATCH',
+            '自动切换绑定订阅与当前订阅不一致',
+          );
+      }
+      const previous = store.getSettings();
+      const updated = store.updateSettings(normalized);
+      const changedFields = Object.keys(normalized).filter(
+        (key) =>
+          previous[key as keyof typeof previous] !==
+          updated[key as keyof typeof updated],
+      );
+      logger.info('settings:service', 'settings updated', {
+        requestId: ctx.state.requestId,
+        changedFields,
+      });
+      ctx.body = settingsResponseSchema.parse({
+        ok: true,
+        data: { settings: updated },
+      });
+    } catch (error) {
+      logger.warn('settings:service', 'settings update failed', {
+        requestId: ctx.state.requestId,
+        errorCode: error instanceof ApiError ? error.code : 'INTERNAL_ERROR',
+      });
+      throw error;
     }
-    ctx.body = settingsResponseSchema.parse({
-      ok: true,
-      data: { settings: store.updateSettings(normalized) },
-    });
   });
 
   const enqueueEmpty =
     (type: 'health_check' | 'diagnose' | 'reset' | 'rollback') =>
     (ctx: Context) => {
       parseRequest(emptyActionRequestSchema, requestBody(ctx));
-      const task = taskService.enqueue(type);
+      const task = taskService.enqueue(type, null, {
+        requestId: String(ctx.state.requestId),
+      });
       ctx.status = 202;
       ctx.body = taskAcceptedResponseSchema.parse({
         ok: true,
@@ -236,7 +269,13 @@ export function createApiRouter(options: ApiRouterOptions) {
     const candidate = diagnosis.candidates.find((item) => item.ip === input.ip);
     if (diagnosis.status !== 'testable' || !candidate?.eligible)
       throw new ApiError(409, 'INVALID_CANDIDATE', '候选 IP 不合格或已失效');
-    const task = taskService.enqueue('apply', { ip: input.ip });
+    const task = taskService.enqueue(
+      'apply',
+      { ip: input.ip },
+      {
+        requestId: String(ctx.state.requestId),
+      },
+    );
     ctx.status = 202;
     ctx.body = taskAcceptedResponseSchema.parse({
       ok: true,

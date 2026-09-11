@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { basename, resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import {
   ipv4Schema,
   type DiagnosisResult,
@@ -16,6 +16,7 @@ import {
   parseOperationOutput,
   parseStatusOutput,
 } from './parsers.js';
+import { noopLogger, type AppLogger } from '../logging.js';
 
 /** Legacy 适配层允许执行的固定 Shell 命令。 */
 type LegacyCommand =
@@ -33,14 +34,14 @@ export interface LegacyAdapterOptions {
   reportDir: string;
   /** apply、reset 和 rollback 使用的配置备份目录。 */
   backupDir: string;
-  /** Legacy 命令脱敏日志的保存目录。 */
-  logDir: string;
   /** 传递给子进程的附加环境变量；固定目录变量仍由适配器覆盖。 */
   environment?: NodeJS.ProcessEnv;
   /** 按命令覆盖默认超时时间，单位为毫秒。 */
   timeouts?: Partial<Record<LegacyCommand, number>>;
   /** 发送 SIGTERM 后等待 SIGKILL 的宽限时间，单位为毫秒。 */
   terminateGraceMs?: number;
+  /** 记录命令类别、耗时和脱敏结果摘要。 */
+  logger?: AppLogger;
 }
 
 /** 各 Legacy 命令的默认执行超时时间，单位为毫秒。 */
@@ -85,7 +86,7 @@ interface CommandOutput {
 /** 在固定安全边界内调用 Legacy Shell，并将结果转换为领域对象。 */
 export class LegacyAdapter {
   private readonly options: LegacyAdapterOptions;
-  private logSequence = 0;
+  private readonly logger: AppLogger;
 
   /**
    * 创建 Legacy Shell 适配器，并将所有运行目录规范化为绝对路径。
@@ -100,8 +101,8 @@ export class LegacyAdapter {
       stateDir: resolve(options.stateDir),
       reportDir: resolve(options.reportDir),
       backupDir: resolve(options.backupDir),
-      logDir: resolve(options.logDir),
     };
+    this.logger = options.logger ?? noopLogger;
   }
 
   /**
@@ -229,7 +230,7 @@ export class LegacyAdapter {
   }
 
   /**
-   * 以固定命令和参数数组启动 Legacy 脚本，并负责超时、进程组终止及日志保存。
+   * 以固定命令和参数数组启动 Legacy 脚本，并负责超时、进程组终止及安全摘要日志。
    *
    * @param command 允许执行的固定 Legacy 命令。
    * @param extraArgs 已完成上层校验的附加参数数组。
@@ -243,6 +244,11 @@ export class LegacyAdapter {
     const args = [command, ...extraArgs];
     const timeoutMs =
       this.options.timeouts?.[command] ?? DEFAULT_TIMEOUTS[command];
+    const startedAt = Date.now();
+    this.logger.debug('legacy:adapter', 'command started', {
+      command,
+      timeoutMs,
+    });
     const environment = {
       ...process.env,
       ...this.options.environment,
@@ -297,15 +303,30 @@ export class LegacyAdapter {
       child.once('close', async (code) => {
         clearTimeout(timeout);
         if (forceTimer) clearTimeout(forceTimer);
-        const rawLog = `${combined}${truncated ? '\n[输出已截断]\n' : ''}`;
-        await this.writeSanitizedLog(command, rawLog);
+        const durationMs = Date.now() - startedAt;
+        const outputMetadata = {
+          command,
+          durationMs,
+          exitCode: code,
+          stdoutBytes: Buffer.byteLength(stdout, 'utf8'),
+          stderrBytes: Buffer.byteLength(stderr, 'utf8'),
+          outputTruncated: truncated,
+        };
         if (timedOut) {
+          this.logger.error('legacy:adapter', 'command timeout', {
+            ...outputMetadata,
+            errorCode: 'TIMEOUT',
+          });
           rejectPromise(
             new LegacyAdapterError('TIMEOUT', `${command} 执行超时`, code),
           );
           return;
         }
         if (spawnError) {
+          this.logger.error('legacy:adapter', 'command failed to start', {
+            ...outputMetadata,
+            errorCode: 'PROCESS_EXITED',
+          });
           rejectPromise(
             new LegacyAdapterError('PROCESS_EXITED', `${command} 无法启动`),
           );
@@ -313,15 +334,25 @@ export class LegacyAdapter {
         }
         if (code !== 0) {
           const safeOutput = this.sanitize(`${stderr}\n${stdout}`).trim();
+          const errorCode = this.mapErrorCode(command, safeOutput);
+          this.logger.error('legacy:adapter', 'command failed', {
+            ...outputMetadata,
+            errorCode,
+          });
           rejectPromise(
             new LegacyAdapterError(
-              this.mapErrorCode(command, safeOutput),
+              errorCode,
               this.publicErrorMessage(command, safeOutput),
               code,
             ),
           );
           return;
         }
+        this.logger.debug(
+          'legacy:adapter',
+          'command completed',
+          outputMetadata,
+        );
         resolvePromise({ stdout, stderr });
       });
     });
@@ -370,7 +401,6 @@ export class LegacyAdapter {
       this.options.stateDir,
       this.options.reportDir,
       this.options.backupDir,
-      this.options.logDir,
       process.env.HOME,
     ].filter((value): value is string => Boolean(value));
     let sanitized = output;
@@ -380,30 +410,6 @@ export class LegacyAdapter {
       sanitized = sanitized.split(value).join('[路径已脱敏]');
     sanitized = sanitized.replace(/(secret\s*[:=]\s*)\S+/gi, '$1[已脱敏]');
     return sanitized;
-  }
-
-  /**
-   * 以受限权限保存脱敏后的命令输出，且不让日志失败影响命令结果。
-   *
-   * @param command 产生日志的 Legacy 命令。
-   * @param output 已捕获的合并输出。
-   */
-  private async writeSanitizedLog(command: LegacyCommand, output: string) {
-    try {
-      await mkdir(this.options.logDir, { recursive: true, mode: 0o700 });
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const sequence = this.logSequence++;
-      const file = resolve(
-        this.options.logDir,
-        `${stamp}-${sequence}-${basename(command)}.log`,
-      );
-      await writeFile(file, this.sanitize(output), {
-        encoding: 'utf8',
-        mode: 0o600,
-      });
-    } catch {
-      // 排障日志失败不能改变 Legacy 命令结果。
-    }
   }
 
   /**

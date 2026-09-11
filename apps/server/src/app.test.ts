@@ -18,6 +18,35 @@ import { TaskService, type LegacyOperations } from './services/task-service.js';
 import { OperationCoordinator } from './services/operation-coordinator.js';
 import { StatusNotificationCenter } from './services/status-notifier.js';
 import { SqliteStore } from './storage/store.js';
+import {
+  noopLogger,
+  type AppLogger,
+  type LogLevel,
+  type LogMetadata,
+  type LogScope,
+} from './logging.js';
+
+interface RecordedLog {
+  level: LogLevel;
+  scope: LogScope;
+  message: string;
+  metadata: LogMetadata;
+}
+
+function recordingLogger(entries: RecordedLog[]): AppLogger {
+  const record =
+    (level: LogLevel) =>
+    (scope: LogScope, message: string, metadata: LogMetadata = {}) => {
+      entries.push({ level, scope, message, metadata });
+    };
+  return {
+    debug: record('debug'),
+    info: record('info'),
+    warn: record('warn'),
+    error: record('error'),
+    close: async () => undefined,
+  };
+}
 
 /** 当前测试创建且需要关闭、清理的隔离运行时。 */
 const setups: Array<{
@@ -81,9 +110,15 @@ function diagnosis(): DiagnosisResult {
 }
 
 /** 创建临时 SQLite、伪造 LegacyAdapter 和待测 Koa 应用。 */
-async function createSetup(overrides: Partial<LegacyOperations> = {}) {
+async function createSetup(
+  overrides: Partial<LegacyOperations> = {},
+  logger: AppLogger = noopLogger,
+) {
   const root = await mkdtemp(join(tmpdir(), 'clash-sentinel-api-'));
-  const store = new SqliteStore({ databasePath: join(root, 'api.db') });
+  const store = new SqliteStore({
+    databasePath: join(root, 'api.db'),
+    logger,
+  });
   const adapter: LegacyOperations = {
     getStatus: vi.fn(async () => legacyStatus()),
     diagnose: vi.fn(async () => diagnosis()),
@@ -120,6 +155,7 @@ async function createSetup(overrides: Partial<LegacyOperations> = {}) {
   const coordinator = new OperationCoordinator();
   const notifier = new StatusNotificationCenter(
     () => new Date('2026-09-09T04:00:00.000Z'),
+    logger,
   );
   const healthCheck = {
     run: vi.fn(async () => {
@@ -152,6 +188,7 @@ async function createSetup(overrides: Partial<LegacyOperations> = {}) {
     healthCheck,
     coordinator,
     notifier,
+    logger,
   });
   const scheduler = {
     getSnapshot: vi.fn<() => MonitoringSnapshot>(() => ({
@@ -175,7 +212,7 @@ async function createSetup(overrides: Partial<LegacyOperations> = {}) {
       taskService,
       scheduler,
       notifier,
-      logger: () => undefined,
+      logger,
     }),
   };
 }
@@ -276,7 +313,10 @@ test('定时监测接口返回内存快照且重复读取没有副作用', async
 });
 
 test('SSE 建连同步、保活且不受普通 API 超时限制', async () => {
-  const setup = await createSetup();
+  const logs: RecordedLog[] = [];
+  const logger = recordingLogger(logs);
+  const setup = await createSetup({}, logger);
+  logs.length = 0;
   const streamApp = createApp({
     store: setup.store,
     taskService: setup.taskService,
@@ -284,7 +324,7 @@ test('SSE 建连同步、保活且不受普通 API 超时限制', async () => {
     notifier: setup.notifier,
     requestTimeoutMs: 5,
     streamHeartbeatMs: 10,
-    logger: () => undefined,
+    logger,
   });
   const server = streamApp.listen(0, '127.0.0.1');
   try {
@@ -320,6 +360,23 @@ test('SSE 建连同步、保活且不受普通 API 超时限制', async () => {
     controller.abort();
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(setup.notifier.getSubscriberCount()).toBe(0);
+    expect(logs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'debug',
+          scope: 'sse:stream',
+          message: 'connected',
+        }),
+        expect.objectContaining({
+          level: 'debug',
+          scope: 'sse:stream',
+          message: 'disconnected',
+        }),
+      ]),
+    );
+    expect(logs.some((entry) => entry.message.includes('keepalive'))).toBe(
+      false,
+    );
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -371,7 +428,7 @@ test('站点接口动态标记过期且定时检测占槽时拒绝手动动作',
     scheduler: setup.scheduler,
     notifier: setup.notifier,
     now: () => Date.parse('2026-09-09T04:02:00.001Z'),
-    logger: () => undefined,
+    logger: noopLogger,
   });
   const sites = await request(boundaryApp.callback()).get('/api/sites');
   expect(sites.body.data.sites.baidu.stale).toBe(true);
@@ -417,6 +474,80 @@ test('任务路径和未知 API 使用统一错误结构', async () => {
   expect(missing.body.error.code).toBe('NOT_FOUND');
   const route = await request(setup.app.callback()).get('/api/missing');
   expect(route.body.error.code).toBe('NOT_FOUND');
+});
+
+test('访问、设置和异步任务使用统一日志等级及关联键', async () => {
+  const logs: RecordedLog[] = [];
+  const setup = await createSetup({}, recordingLogger(logs));
+  logs.length = 0;
+
+  await request(setup.app.callback()).get('/api/status').expect(200);
+  await request(setup.app.callback())
+    .put('/api/settings')
+    .send({
+      checkIntervalMs: 120_000,
+      requestTimeoutMs: 5_000,
+      entryFailureThreshold: 3,
+      autoSwitchCooldownMs: 300_000,
+      monitoringEnabled: true,
+      autoSwitchEnabled: false,
+      autoSwitchProfileUid: null,
+    })
+    .expect(200);
+  const accepted = await request(setup.app.callback())
+    .post('/api/actions/health-check')
+    .send({})
+    .expect(202);
+  await setup.taskService.waitForIdle();
+  await request(setup.app.callback()).get('/api/missing').expect(404);
+
+  expect(logs).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        level: 'debug',
+        scope: 'http:access',
+        message: 'request completed',
+        metadata: expect.objectContaining({ method: 'GET', status: 200 }),
+      }),
+      expect.objectContaining({
+        level: 'info',
+        scope: 'settings:service',
+        message: 'settings updated',
+        metadata: expect.objectContaining({
+          changedFields: ['checkIntervalMs'],
+          requestId: expect.any(String),
+        }),
+      }),
+      expect.objectContaining({
+        level: 'info',
+        scope: 'task:service',
+        message: 'queued',
+        metadata: expect.objectContaining({
+          taskType: 'health_check',
+          taskId: accepted.body.data.taskId,
+          requestId: expect.any(String),
+        }),
+      }),
+      expect.objectContaining({
+        level: 'info',
+        scope: 'task:service',
+        message: 'succeeded',
+        metadata: expect.objectContaining({
+          taskId: accepted.body.data.taskId,
+          durationMs: expect.any(Number),
+        }),
+      }),
+      expect.objectContaining({
+        level: 'warn',
+        scope: 'http:access',
+        message: 'request failed',
+        metadata: expect.objectContaining({
+          status: 404,
+          errorCode: 'NOT_FOUND',
+        }),
+      }),
+    ]),
+  );
 });
 
 test('设置完整更新并校验自动切换锁定和订阅', async () => {
@@ -642,7 +773,9 @@ test('后台稳定错误写入失败任务且 reset 关闭自动切换', async (
 });
 
 test('非法 JSON、请求超时和内部异常不泄露原文', async () => {
-  const setup = await createSetup();
+  const logs: RecordedLog[] = [];
+  const logger = recordingLogger(logs);
+  const setup = await createSetup({}, logger);
   const invalid = await request(setup.app.callback())
     .put('/api/settings')
     .set('Content-Type', 'application/json')
@@ -654,7 +787,7 @@ test('非法 JSON、请求超时和内部异常不泄露原文', async () => {
     scheduler: setup.scheduler,
     notifier: setup.notifier,
     requestTimeoutMs: 5,
-    logger: () => undefined,
+    logger,
   });
   timeoutApp.use(async (ctx) => {
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -668,4 +801,27 @@ test('非法 JSON、请求超时和内部异常不泄露原文', async () => {
   const internal = await request(setup.app.callback()).get('/api/settings');
   expect(internal.status).toBe(500);
   expect(JSON.stringify(internal.body)).not.toContain('/private');
+  expect(logs).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        level: 'error',
+        scope: 'http:access',
+        message: 'request timeout',
+        metadata: expect.objectContaining({
+          status: 504,
+          errorCode: 'REQUEST_TIMEOUT',
+        }),
+      }),
+      expect.objectContaining({
+        level: 'error',
+        scope: 'http:access',
+        message: 'request failed',
+        metadata: expect.objectContaining({
+          status: 500,
+          errorCode: 'INTERNAL_ERROR',
+          error: expect.any(Error),
+        }),
+      }),
+    ]),
+  );
 });

@@ -35,8 +35,22 @@ npm start
 
 Legacy 适配层使用参数数组启动脚本，不经过 Shell 拼接；为不同操作设置独立超时，
 超时后终止整个进程组。诊断报告、健康状态和控制台结果会转换为共享领域类型，
-排障输出在写入 `logs/legacy` 前会脱敏。该能力当前仅供后台内部调用，不提供业务
-HTTP 接口。
+命令日志只通过 Winston Console Transport 输出类别、耗时、退出码和输出字节数，
+不会记录 stdout、stderr、Token 或完整配置。该能力当前仅供后台内部调用，不提供业务 HTTP 接口。
+
+服务端日志格式为 `[时间] [级别] 模块:子模块 内容`。开发环境输出 `DEBUG` 及以上，
+生产环境输出 `INFO` 及以上；仅终端 TTY 启用颜色，设置 `NO_COLOR` 或重定向输出时
+自动使用无 ANSI 控制码的纯文本。在不提供 TTY 的终端中可用 `FORCE_COLOR=1 npm run dev`
+强制开启颜色，`FORCE_COLOR=0` 则强制关闭；`FORCE_COLOR` 的优先级高于 `NO_COLOR`。
+日志只输出到控制台，不创建应用日志文件；
+`requestId`、`taskId` 和 `runId` 始终完整输出。
+
+服务启动时严格读取仓库根目录的 `config/default.yaml`。可用
+`CLASH_SENTINEL_CONFIG` 指定替代 YAML；相对路径仍以仓库根目录解析。配置缺失、YAML
+非法、字段缺失、类型错误或出现未知字段时服务会安全失败并以退出码 1 结束。配置仅在启动时
+读取，不支持热更新，也不通过 HTTP API 或 SQLite 暴露。日志与 SQLite 脱敏分别由
+`logging.redactSensitiveData` 和 `storage.redactSensitiveData` 控制，默认均为 `true`；设为
+`false` 会在对应范围完整保留凭据、URL 和本机路径，存在明确的敏感信息泄露风险。
 
 本地存储使用同步、事务化的 SQLite，默认数据库位于仓库根目录的
 `.state/clash-sentinel.db`，不受 npm workspace 当前目录影响。可以通过
@@ -44,7 +58,8 @@ HTTP 接口。
 `SqliteStore` 构造参数覆盖路径；测试始终使用独立临时数据库。启动时会执行版本化迁移，
 并将上次进程遗留的运行中任务标记为“服务重启中断”，不会自动重放配置修改。
 数据库保存策略、当前快照、站点历史、最近诊断候选、任务和事件，不保存 Legacy 原始报告、
-完整订阅正文、Mihomo 密钥或非必要本机路径。站点历史及普通、关键事件分别按数量上限清理，
+完整订阅正文、Mihomo 密钥或非必要本机路径。关闭存储脱敏只影响服务启动后的新写入，
+不会恢复已经脱敏的历史内容，也不会自动清洗历史明文。站点历史及普通、关键事件分别按数量上限清理，
 当前快照和最近诊断不参与历史清理。
 完整表结构、关系、事务和安全规则见[数据库设计文档](docs/database-design.md)。
 接口契约、任务语义和错误码见 [API 设计文档](docs/api-design.md)。

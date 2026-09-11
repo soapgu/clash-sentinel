@@ -507,7 +507,8 @@ stateDiagram-v2
 
 ### 7.1 开放 JSON 字段
 
-任务输入、任务结果和事件详情在写入前递归遍历对象和数组。包含以下含义的键名会将对应值
+`config/default.yaml` 中的 `storage.redactSensitiveData` 默认是 `true`。启用时，任务输入、
+任务结果和事件详情在写入前递归遍历对象和数组。包含以下含义的键名会将对应值
 替换为 `[敏感字段已脱敏]`：
 
 - `secret`、`password`、`token`。
@@ -520,6 +521,10 @@ stateDiagram-v2
 过滤是大小写不敏感的子串匹配，因此 `controllerSecret`、`apiToken` 和
 `authorizationHeader` 也会被处理。循环引用和不可 JSON 序列化的值会被拒绝。
 
+设为 `false` 时不替换敏感键、订阅正文或本机路径，任务错误说明和事件摘要也按原值保存。
+该选择只影响当前进程启动后的新写入：切换配置并重新打开数据库不会恢复已脱敏内容，也不会
+清洗已有明文。无论开关状态如何，循环引用和不可序列化值仍会被拒绝。
+
 ### 7.2 字符串内容
 
 包含顶层 `proxies:` 或 `proxy-groups:` 特征的字符串会整体替换为 `[订阅内容已脱敏]`。以
@@ -531,14 +536,17 @@ stateDiagram-v2
 单个 `input_json`、`result_json` 或 `details_json` 编码后的 UTF-8 大小不得超过 32 KiB，超限
 抛出 `StorageError('SERIALIZATION')`，不会截断后保存不完整 JSON。
 
-数据库可以保存订阅 UID、显示名、入口域名、候选 IP 和必要结果，但不得保存：
+默认配置下，数据库可以保存订阅 UID、显示名、入口域名、候选 IP 和必要结果，但不得保存：
 
 - Mihomo 密钥或 Authorization 原文。
 - 完整 Clash 配置或订阅正文。
 - Legacy 原始报告、监控状态或诊断 TSV。
 - Clash 配置路径、报告路径和备份路径。
 
-本阶段存储层不新增普通日志；Legacy 日志继续由 Step 3 的适配器在指定目录中单独脱敏管理。
+本阶段存储层不新增普通日志表；服务端和 Legacy 适配器统一通过 Winston Console Transport 输出自然文本，不落应用日志文件。
+
+脱敏开关不改变 Zod/领域 Schema、事务、任务状态转换、32 KiB JSON 上限或 2000 字符任务错误
+上限。关闭脱敏会令以下敏感内容以明文进入 SQLite，必须由操作者自行承担文件访问和备份风险。
 
 ## 8. 保留与清理
 

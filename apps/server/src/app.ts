@@ -7,6 +7,7 @@ import { extname, join } from 'node:path';
 import { apiErrorResponseSchema } from '@clash-sentinel/shared';
 import { createApiRouter, type ApiRouterOptions } from './api/router.js';
 import { ApiError } from './api/errors.js';
+import { noopLogger, type AppLogger } from './logging.js';
 
 /** Koa 应用工厂依赖及可选运行参数。 */
 export interface CreateAppOptions extends ApiRouterOptions {
@@ -14,8 +15,8 @@ export interface CreateAppOptions extends ApiRouterOptions {
   staticRoot?: string;
   /** API 请求处理超时，单位为毫秒。 */
   requestTimeoutMs?: number;
-  /** 接收脱敏请求摘要的日志函数。 */
-  logger?: (message: string) => void;
+  /** 接收访问日志和业务日志的统一日志器。 */
+  logger?: AppLogger;
 }
 
 /** 从未知异常中读取 Koa bodyparser 使用的 HTTP 状态。 */
@@ -33,7 +34,7 @@ function errorStatus(error: unknown) {
  */
 export function createApp(options: CreateAppOptions) {
   const app = new Koa();
-  const logger = options.logger ?? console.info;
+  const logger = options.logger ?? noopLogger;
   const requestTimeoutMs = options.requestTimeoutMs ?? 10_000;
 
   app.use(async (ctx, next) => {
@@ -44,18 +45,32 @@ export function createApp(options: CreateAppOptions) {
     try {
       await next();
     } finally {
-      try {
-        logger(
-          JSON.stringify({
-            requestId,
-            method: ctx.method,
-            path: ctx.path,
-            status: ctx.status,
-            durationMs: Date.now() - startedAt,
-          }),
-        );
-      } catch {
-        // 请求日志失败不能改变 API 响应。
+      if (ctx.path !== '/api/stream') {
+        const metadata = {
+          method: ctx.method,
+          path: ctx.path,
+          status: ctx.status,
+          durationMs: Date.now() - startedAt,
+          requestId,
+          ...(ctx.state.apiErrorCode
+            ? { errorCode: String(ctx.state.apiErrorCode) }
+            : undefined),
+          ...(ctx.state.unhandledError instanceof Error
+            ? { error: ctx.state.unhandledError }
+            : undefined),
+        };
+        const message =
+          ctx.status === 504
+            ? 'request timeout'
+            : ctx.status >= 400
+              ? 'request failed'
+              : 'request completed';
+        if (ctx.status >= 500) logger.error('http:access', message, metadata);
+        else if (ctx.status >= 400)
+          logger.warn('http:access', message, metadata);
+        else if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(ctx.method))
+          logger.info('http:access', message, metadata);
+        else logger.debug('http:access', message, metadata);
       }
     }
   });
@@ -71,6 +86,8 @@ export function createApp(options: CreateAppOptions) {
           : parserStatus === 400 || parserStatus === 413
             ? new ApiError(400, 'INVALID_JSON', '请求体不是合法 JSON')
             : new ApiError(500, 'INTERNAL_ERROR', '后台处理失败');
+      ctx.state.apiErrorCode = apiError.code;
+      if (!(error instanceof ApiError)) ctx.state.unhandledError = error;
       ctx.status = apiError.status;
       ctx.body = apiErrorResponseSchema.parse({
         ok: false,

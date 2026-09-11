@@ -4,6 +4,7 @@ import {
   type StreamNotificationReason,
   type StreamResource,
 } from '@clash-sentinel/shared';
+import { noopLogger, type AppLogger } from '../logging.js';
 
 /** 接收单条已校验 SSE 失效通知。 */
 export type StatusNotificationListener = (
@@ -26,16 +27,27 @@ export class StatusNotificationCenter implements StatusNotifier {
   private nextId = 1;
   private closed = false;
   private readonly now: () => Date;
+  private readonly logger: AppLogger;
 
   /** @param now 测试可注入的当前时间。 */
-  constructor(now: () => Date = () => new Date()) {
+  constructor(
+    now: () => Date = () => new Date(),
+    logger: AppLogger = noopLogger,
+  ) {
     this.now = now;
+    this.logger = logger;
   }
 
   /** 发布通知；单个订阅者失败时将其隔离并关闭。 */
   publish(reason: StreamNotificationReason, resources: StreamResource[]): void {
     if (this.closed) return;
     const notification = this.createNotification(reason, resources);
+    this.logger.debug('sse:stream', 'notification published', {
+      notificationId: notification.id,
+      reason,
+      resources,
+      subscribers: this.subscribers.size,
+    });
     for (const subscriber of [...this.subscribers])
       this.deliver(subscriber, notification);
   }
@@ -78,8 +90,12 @@ export class StatusNotificationCenter implements StatusNotifier {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    const subscribers = this.subscribers.size;
     for (const subscriber of [...this.subscribers])
       this.closeSubscriber(subscriber);
+    this.logger.info('sse:stream', 'notification center closed', {
+      subscribers,
+    });
   }
 
   /** 仅供运行状态和测试确认订阅已释放。 */
@@ -106,7 +122,12 @@ export class StatusNotificationCenter implements StatusNotifier {
   ): void {
     try {
       subscriber.listener(notification);
-    } catch {
+    } catch (error) {
+      this.logger.warn('sse:stream', 'delivery failed', {
+        notificationId: notification.id,
+        reason: notification.reason,
+        error,
+      });
       this.closeSubscriber(subscriber);
     }
   }
@@ -115,7 +136,8 @@ export class StatusNotificationCenter implements StatusNotifier {
     this.subscribers.delete(subscriber);
     try {
       subscriber.onClose();
-    } catch {
+    } catch (error) {
+      this.logger.warn('sse:stream', 'subscriber close failed', { error });
       // 单个客户端的关闭错误不能影响其他订阅者或后台业务。
     }
   }

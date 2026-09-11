@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsx watch src/index.ts"
+    "dev": "env -u NO_COLOR FORCE_COLOR=1 tsx watch src/index.ts"
   },
   "dependencies": {
     "@clash-sentinel/shared": "*",
@@ -14,7 +14,9 @@
     "koa-bodyparser": "^4.4.1",
     "koa-static": "^5.0.0",
     "undici": "^8.10.2",
-    "yaml": "^2.9.0"
+    "winston": "^3.19.0",
+    "yaml": "^2.9.0",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
