@@ -13,55 +13,99 @@ import type {
   HealthCheckExecution,
   HealthCheckSource,
 } from './health/health-check.js';
+import type { TaskSubmission } from './tasks/contracts.js';
 
+/** 自动切换服务允许调用的最小 Legacy 诊断和应用能力。 */
 type AutoSwitchLegacyOperations = Pick<LegacyAdapter, 'diagnose' | 'applyIp'>;
 
+/** 自动切换领域服务的构造依赖。 */
 export interface AutoSwitchServiceOptions {
+  /** 读取设置、健康快照和诊断并写入切换结果的存储门面。 */
   store: SqliteStore;
+  /** 执行严格诊断和应用候选 IP 的 Legacy 能力。 */
   adapter: AutoSwitchLegacyOperations;
+  /** 测试可注入的当前时间提供器。 */
   now?: () => Date;
+  /** 记录自动处理结果和拒绝原因的统一日志器。 */
   logger?: AppLogger;
 }
 
-/** TaskService 创建自动任务前得到的业务执行计划。 */
+/** 自动切换 Handler 内部使用的单次业务执行状态。 */
 export interface AutoSwitchPlan {
+  /** 创建任务时已持久化、可在执行前重新验证的输入。 */
   input: StoredJsonObject;
+  /** Handler 开始执行时重新读取的权威健康快照。 */
   snapshot: HealthSnapshot;
+  /** 触发自动处理的健康检查来源。 */
   source: HealthCheckSource;
+  /** 手动健康任务 ID 或定时检测 runId。 */
   parentId: string;
+  /** 是否可以复用当前健康轮次刚写入的诊断报告。 */
   reuseDiagnosis: boolean;
+  /** 用于区分修改前失败与应用阶段失败的当前阶段。 */
   phase: 'diagnose' | 'apply';
 }
 
-/** 自动切换动作交给 TaskService 持久化的业务结果。 */
+/** 写入 auto_switch 任务 input_json 的最小可恢复上下文。 */
+export interface AutoSwitchTaskInput extends StoredJsonObject {
+  /** 触发来源，用于日志和审计关联。 */
+  trigger: HealthCheckSource;
+  /** 触发自动处理的健康任务 ID 或调度 runId。 */
+  parentId: string;
+  /** 规划时的锁定 IP，用于执行前检测上下文漂移。 */
+  currentIp: string;
+  /** 规划时的订阅 UID，用于阻止跨订阅执行。 */
+  profileUid: string;
+  /** 当前健康轮次是否已经产生可复用诊断。 */
+  reuseDiagnosis: boolean;
+}
+
+/** 自动切换动作交给 TaskEngine 持久化的业务结果。 */
 export interface AutoSwitchExecution {
+  /** 写入任务 result_json 的操作结果。 */
   result: StoredJsonObject;
+  /** 自动处理实际改变的前端资源。 */
   changedResources: StreamResource[];
+  /** 覆盖默认任务成功摘要的业务说明。 */
   eventSummary?: string;
+  /** 自动切换前后 IP 等安全审计详情。 */
   eventDetails?: StoredJsonObject | null;
 }
 
 /** 自动切换失败后的恢复状态和资源变化。 */
 export interface AutoSwitchFailureHandling {
+  /** 修改前拒绝、已恢复或需要人工处理的状态。 */
   recoveryStatus: TaskRecoveryStatus;
+  /** 冷却、健康或设置变化对应的失效资源。 */
   changedResources: StreamResource[];
 }
 
 /** 在健康轮次持有的全局租约内执行自动诊断、切换、冷却和故障保护。 */
 export class AutoSwitchService {
+  /** 统一生成冷却截止时间的可注入时钟。 */
   private readonly now: () => Date;
+  /** 自动处理领域日志器。 */
   private readonly logger: AppLogger;
 
+  /** @param options 自动切换所需存储、Legacy、时钟和日志依赖。 */
   constructor(private readonly options: AutoSwitchServiceOptions) {
     this.now = options.now ?? (() => new Date());
     this.logger = options.logger ?? noopLogger;
   }
 
+  /**
+   * 根据刚完成的健康检查决定是否创建 auto_switch 任务声明。
+   *
+   * @param health 已落库的健康快照及本轮变化摘要。
+   * @param source 手动或定时检测来源。
+   * @param parentId 健康任务 ID 或调度 runId。
+   * @returns 满足全部前置条件时返回可持久化任务，否则返回 null。
+   */
   prepare(
     health: HealthCheckExecution,
     source: HealthCheckSource,
     parentId: string,
-  ): AutoSwitchPlan | null {
+  ): TaskSubmission | null {
     const settings = this.options.store.getSettings();
     const snapshot = health.snapshot;
     if (
@@ -77,22 +121,76 @@ export class AutoSwitchService {
       return null;
     if (!snapshot.lock.locked) return null;
     return {
+      type: 'auto_switch',
       input: {
         trigger: source,
         parentId,
         currentIp: snapshot.lock.ip,
+        profileUid: snapshot.profile.uid,
+        reuseDiagnosis: health.changes.candidatesUpdated,
       },
+      metadata: { trigger: source, parentId },
+      queuedResources: ['monitoring'],
+    };
+  }
+
+  /**
+   * 从持久化输入和当前权威快照恢复单次执行计划。
+   *
+   * @param input auto_switch 任务表中保存的上下文。
+   * @returns 基于当前权威快照重建的进程内计划。
+   * @throws 输入不完整、订阅变化或锁定 IP 漂移时拒绝恢复。
+   */
+  restorePlan(input: StoredJsonObject | null): AutoSwitchPlan {
+    const source = input?.trigger;
+    const parentId = input?.parentId;
+    const currentIp = input?.currentIp;
+    const profileUid = input?.profileUid;
+    const reuseDiagnosis = input?.reuseDiagnosis;
+    const snapshot = this.options.store.getHealthSnapshot();
+    if (
+      (source !== 'manual' && source !== 'scheduled') ||
+      typeof parentId !== 'string' ||
+      typeof currentIp !== 'string' ||
+      typeof profileUid !== 'string' ||
+      typeof reuseDiagnosis !== 'boolean' ||
+      !snapshot?.profile ||
+      snapshot.profile.uid !== profileUid ||
+      !snapshot.lock.locked ||
+      snapshot.lock.ip !== currentIp
+    )
+      throw new Error('自动切换任务上下文已失效');
+    return {
+      input: input as StoredJsonObject,
       snapshot,
       source,
       parentId,
-      reuseDiagnosis: health.changes.candidatesUpdated,
+      reuseDiagnosis,
       phase: 'diagnose',
     };
   }
 
+  /**
+   * 复核当前设置并执行诊断、候选选择、应用和冷却写入。
+   *
+   * @param plan Handler 从持久化输入恢复的单次执行计划。
+   * @returns 任务结果、精确资源变化和定制审计信息。
+   * @throws 条件失效、诊断失败或配置应用失败时交由 Handler 处理。
+   */
   async execute(plan: AutoSwitchPlan): Promise<AutoSwitchExecution> {
     const settings = this.options.store.getSettings();
     const snapshot = plan.snapshot;
+    if (
+      !settings.autoSwitchEnabled ||
+      !snapshot.profile ||
+      settings.autoSwitchProfileUid !== snapshot.profile.uid ||
+      snapshot.status !== 'entry_down' ||
+      (snapshot.internetSuccess ?? 0) < 2 ||
+      snapshot.consecutiveFailures < settings.entryFailureThreshold ||
+      (snapshot.autoSwitchCooldownUntil !== null &&
+        Date.parse(snapshot.autoSwitchCooldownUntil) > this.now().getTime())
+    )
+      throw new Error('自动切换执行条件已失效');
     if (!snapshot.lock.locked) throw new Error('自动切换计划缺少锁定入口');
     const lock = snapshot.lock;
     const diagnosis = plan.reuseDiagnosis
@@ -136,6 +234,14 @@ export class AutoSwitchService {
     };
   }
 
+  /**
+   * 根据失败阶段和 Legacy 恢复结论执行冷却或安全关闭。
+   *
+   * @param plan 正在执行且记录了当前阶段的自动切换计划。
+   * @param error 诊断或应用阶段抛出的原始异常。
+   * @param recoveryStatus 配置动作已经确认的恢复状态。
+   * @returns TaskEngine 可持久化的恢复状态和资源变化。
+   */
   handleFailure(
     plan: AutoSwitchPlan,
     error: unknown,
@@ -156,6 +262,27 @@ export class AutoSwitchService {
     return handling;
   }
 
+  /**
+   * 无法恢复持久化任务上下文时进入安全关闭状态。
+   *
+   * @returns recoveryStatus=unknown 并包含 settings 的资源变化。
+   */
+  handleInvalidContext(): AutoSwitchFailureHandling {
+    this.options.store.updateSettings({
+      autoSwitchEnabled: false,
+      autoSwitchProfileUid: null,
+    });
+    return {
+      recoveryStatus: 'unknown',
+      changedResources: ['monitoring', 'status', 'candidates', 'settings'],
+    };
+  }
+
+  /**
+   * 选择不同于当前 IP 且平均延迟最低的合格候选。
+   *
+   * @returns 最优候选；没有可用候选时返回 undefined。
+   */
   private selectCandidate(candidates: DiagnosisCandidate[], currentIp: string) {
     return candidates
       .filter((item) => item.eligible && item.ip !== currentIp)
@@ -165,6 +292,7 @@ export class AutoSwitchService {
       )[0];
   }
 
+  /** @returns 冷却或安全关闭后的最终恢复状态及资源变化。 */
   private applyFailurePolicy(
     snapshot: HealthSnapshot,
     cooldownMs: number,
@@ -199,6 +327,7 @@ export class AutoSwitchService {
     return { recoveryStatus: effectiveRecovery, changedResources };
   }
 
+  /** 将诊断推荐地址写入当前健康快照。 */
   private writeRecommended(snapshot: HealthSnapshot, recommendedIp: string) {
     this.options.store.upsertHealthSnapshot({
       ...snapshot,
@@ -207,6 +336,7 @@ export class AutoSwitchService {
     });
   }
 
+  /** 从当前时间开始写入下一次允许自动处理的冷却截止时间。 */
   private writeCooldown(
     snapshot: HealthSnapshot,
     cooldownMs: number,
@@ -223,6 +353,7 @@ export class AutoSwitchService {
     });
   }
 
+  /** 写入切换后的健康入口、清零失败次数并开始冷却。 */
   private writeSuccess(
     snapshot: HealthSnapshot,
     ip: string,

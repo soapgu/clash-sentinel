@@ -6,7 +6,8 @@ import { HealthScheduler } from './services/health/health-scheduler.js';
 import { UndiciSiteProbe } from './services/health/site-probe.js';
 import { OperationCoordinator } from './services/operation-coordinator.js';
 import { StatusNotificationCenter } from './services/status-notifier.js';
-import { TaskService } from './services/task-service.js';
+import { TaskEngine } from './services/tasks/task-engine.js';
+import { createTaskHandlerRegistry } from './services/tasks/registry.js';
 import { SqliteStore } from './storage/store.js';
 import { createAppLogger, type AppLogger } from './logging.js';
 import { loadServerConfig, type ServerConfig } from './config.js';
@@ -16,8 +17,8 @@ import { AutoSwitchService } from './services/auto-switch-service.js';
 export interface RuntimeDependencies {
   /** SQLite 数据访问门面。 */
   store: SqliteStore;
-  /** 串行异步任务服务。 */
-  taskService: TaskService;
+  /** 统一执行手动和自动任务生命周期的任务引擎。 */
+  taskEngine: TaskEngine;
   /** 启动即运行且可安全停止的健康调度器。 */
   scheduler: HealthScheduler;
   /** 当前进程内的 SSE 通知和连接生命周期中心。 */
@@ -74,25 +75,33 @@ export function createRuntimeDependencies(
     adapter,
     logger,
   });
-  const taskService = new TaskService({
+  const handlers = createTaskHandlerRegistry({
     store,
     adapter,
     healthCheck,
+    autoSwitch,
+    planAutoSwitch: (health, source, parentId) =>
+      autoSwitch.prepare(health, source, parentId),
+  });
+  const taskEngine = new TaskEngine({
+    store,
     coordinator,
     notifier,
     logger,
-    autoSwitch,
+    handlers,
   });
   return {
     store,
-    taskService,
+    taskEngine,
     scheduler: new HealthScheduler({
       store,
       coordinator,
       healthCheck,
       notifier,
       logger,
-      taskService,
+      taskEngine: taskEngine,
+      planAutoSwitch: (health, source, parentId) =>
+        autoSwitch.prepare(health, source, parentId),
     }),
     notifier,
     siteProbe,

@@ -29,8 +29,8 @@ afterEach(async () => {
 /** 创建测试调度器及其隔离存储。 */
 async function setup(
   run: () => Promise<HealthCheckExecution>,
-  taskService?: {
-    runAutoSwitch: ReturnType<typeof vi.fn<() => Promise<StreamResource[]>>>;
+  taskEngine?: {
+    runWithLease: ReturnType<typeof vi.fn<() => Promise<StreamResource[]>>>;
   },
 ) {
   const root = await mkdtemp(join(tmpdir(), 'clash-scheduler-'));
@@ -44,9 +44,12 @@ async function setup(
     coordinator,
     healthCheck,
     notifier,
-    taskService,
+    taskEngine,
+    planAutoSwitch: taskEngine
+      ? () => ({ type: 'auto_switch', input: { trigger: 'scheduled' } })
+      : undefined,
   });
-  return { store, coordinator, healthCheck, scheduler, notifier, taskService };
+  return { store, coordinator, healthCheck, scheduler, notifier, taskEngine };
 }
 
 /** 返回调度测试使用的最小合法快照。 */
@@ -193,19 +196,19 @@ test('完成通知仅包含健康检查摘要报告的变化资源', async () =>
 
 test('定时检测完成后在同一租约中执行自动切换并合并变化资源', async () => {
   vi.useFakeTimers();
-  const taskService = {
-    runAutoSwitch: vi.fn(
-      async () => ['settings', 'events'] as StreamResource[],
-    ),
+  const taskEngine = {
+    runWithLease: vi.fn(async () => ['settings', 'events'] as StreamResource[]),
   };
-  const value = await setup(async () => execution(), taskService);
+  const value = await setup(async () => execution(), taskEngine);
   const notifications: StreamNotification[] = [];
   value.notifier.subscribe((notification) => notifications.push(notification));
   notifications.length = 0;
   value.scheduler.start();
   await vi.advanceTimersByTimeAsync(0);
-  expect(taskService.runAutoSwitch).toHaveBeenCalledOnce();
-  expect(taskService.runAutoSwitch.mock.calls[0]?.[1]).toBe('scheduled');
+  expect(taskEngine.runWithLease).toHaveBeenCalledOnce();
+  expect(taskEngine.runWithLease.mock.calls[0]?.[0]).toMatchObject({
+    type: 'auto_switch',
+  });
   expect(notifications.at(-1)).toMatchObject({
     reason: 'monitoring_completed',
     resources: ['monitoring', 'status', 'sites', 'settings', 'events'],

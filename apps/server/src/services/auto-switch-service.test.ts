@@ -12,7 +12,8 @@ import { SqliteStore } from '../storage/store.js';
 import { OperationCoordinator } from './operation-coordinator.js';
 import { StatusNotificationCenter } from './status-notifier.js';
 import { AutoSwitchService } from './auto-switch-service.js';
-import { TaskService } from './task-service.js';
+import { TaskEngine } from './tasks/task-engine.js';
+import { createTaskHandlerRegistry } from './tasks/registry.js';
 
 const cleanups: Array<{ root: string; store: SqliteStore }> = [];
 
@@ -67,6 +68,7 @@ function diagnosis(eligible = true): DiagnosisResult {
   };
 }
 
+/** 创建自动切换集成测试所需的隔离任务引擎和可控领域依赖。 */
 async function setup(
   options: {
     diagnosis?: DiagnosisResult;
@@ -102,21 +104,26 @@ async function setup(
     now: () => new Date('2026-09-11T04:01:00.000Z'),
   });
   const coordinator = new OperationCoordinator();
-  const taskService = new TaskService({
+  const taskEngine = new TaskEngine({
     store,
-    adapter: {
-      ...adapter,
-      diagnose: adapter.diagnose,
-      getStatus: vi.fn(),
-      readLatestDiagnosis: vi.fn(),
-      healthCheck: vi.fn(),
-      resetLock: vi.fn(),
-      rollback: vi.fn(),
-    },
-    healthCheck: { run: vi.fn() },
     coordinator,
     notifier,
-    autoSwitch: service,
+    handlers: createTaskHandlerRegistry({
+      store,
+      adapter: {
+        ...adapter,
+        diagnose: adapter.diagnose,
+        getStatus: vi.fn(),
+        readLatestDiagnosis: vi.fn(),
+        healthCheck: vi.fn(),
+        resetLock: vi.fn(),
+        rollback: vi.fn(),
+      },
+      healthCheck: { run: vi.fn() },
+      autoSwitch: service,
+      planAutoSwitch: (health, source, parentId) =>
+        service.prepare(health, source, parentId),
+    }),
   });
   const lease = coordinator.tryAcquireScheduled()!;
   const notifications: StreamNotification[] = [];
@@ -126,16 +133,24 @@ async function setup(
     store,
     adapter,
     service,
-    taskService,
+    taskEngine,
     coordinator,
     lease,
     notifications,
+    runAutoSwitch: async (
+      health: Parameters<AutoSwitchService['prepare']>[0],
+      source: Parameters<AutoSwitchService['prepare']>[1],
+      parentId: string,
+    ) => {
+      const submission = service.prepare(health, source, parentId);
+      return submission ? await taskEngine.runWithLease(submission, lease) : [];
+    },
   };
 }
 
 test('满足条件时创建自动任务、应用最佳候选并持久化冷却', async () => {
   const value = await setup({ diagnosis: diagnosis() });
-  await value.taskService.runAutoSwitch(
+  await value.runAutoSwitch(
     {
       snapshot: snapshot(),
       changes: {
@@ -147,7 +162,6 @@ test('满足条件时创建自动任务、应用最佳候选并持久化冷却',
       },
     },
     'scheduled',
-    value.lease,
     'run-1',
   );
   expect(value.adapter.diagnose).not.toHaveBeenCalled();
@@ -169,7 +183,7 @@ test('满足条件时创建自动任务、应用最佳候选并持久化冷却',
 
 test('无合格候选以 no_change 完成并进入冷却', async () => {
   const value = await setup({ diagnosis: diagnosis(false) });
-  await value.taskService.runAutoSwitch(
+  await value.runAutoSwitch(
     {
       snapshot: snapshot(),
       changes: {
@@ -181,7 +195,6 @@ test('无合格候选以 no_change 完成并进入冷却', async () => {
       },
     },
     'manual',
-    value.lease,
     'health-task',
   );
   expect(value.adapter.diagnose).toHaveBeenCalledOnce();
@@ -203,7 +216,7 @@ test('失败已恢复时保留自动开关并进入冷却', async () => {
       'recovered',
     ),
   });
-  await value.taskService.runAutoSwitch(
+  await value.runAutoSwitch(
     {
       snapshot: snapshot(),
       changes: {
@@ -215,7 +228,6 @@ test('失败已恢复时保留自动开关并进入冷却', async () => {
       },
     },
     'scheduled',
-    value.lease,
     'run-2',
   );
   expect(value.store.listTasks(1)[0]).toMatchObject({
@@ -238,7 +250,7 @@ test('恢复失败时关闭自动切换且冷却期阻止创建任务', async ()
       'recovery_failed',
     ),
   });
-  await value.taskService.runAutoSwitch(
+  await value.runAutoSwitch(
     {
       snapshot: snapshot(),
       changes: {
@@ -250,7 +262,6 @@ test('恢复失败时关闭自动切换且冷却期阻止创建任务', async ()
       },
     },
     'scheduled',
-    value.lease,
     'run-3',
   );
   expect(value.store.getSettings()).toMatchObject({
@@ -267,7 +278,7 @@ test('恢复失败时关闭自动切换且冷却期阻止创建任务', async ()
     ...snapshot(),
     autoSwitchCooldownUntil: '2026-09-11T04:02:00.000Z',
   });
-  await cooling.taskService.runAutoSwitch(
+  await cooling.runAutoSwitch(
     {
       snapshot: cooling.store.getHealthSnapshot()!,
       changes: {
@@ -279,7 +290,6 @@ test('恢复失败时关闭自动切换且冷却期阻止创建任务', async ()
       },
     },
     'scheduled',
-    cooling.lease,
     'run-4',
   );
   expect(cooling.store.listTasks()).toHaveLength(0);

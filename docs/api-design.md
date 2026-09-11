@@ -676,7 +676,7 @@ sequenceDiagram
     participant UI as Web
     participant API as Koa API
     participant DB as SQLite
-    participant Job as TaskService
+    participant Job as TaskEngine
     participant Legacy as LegacyAdapter
     UI->>API: POST /api/actions/...
     API->>DB: 创建 queued 任务

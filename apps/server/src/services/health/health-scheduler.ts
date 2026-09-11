@@ -8,7 +8,8 @@ import type { StatusNotifier } from '../status-notifier.js';
 import type { HealthCheckService } from './health-check.js';
 import { randomUUID } from 'node:crypto';
 import { noopLogger, type AppLogger } from '../../logging.js';
-import type { TaskService } from '../task-service.js';
+import type { TaskEngine } from '../tasks/task-engine.js';
+import type { AutoSwitchPlanner } from '../tasks/health-check-task-handler.js';
 
 /** 定时健康检测调度器依赖。 */
 export interface HealthSchedulerOptions {
@@ -24,7 +25,10 @@ export interface HealthSchedulerOptions {
   now?: () => number;
   /** 记录调度计划、执行、跳过和失败。 */
   logger?: AppLogger;
-  taskService?: Pick<TaskService, 'runAutoSwitch'>;
+  /** 在定时检测已有租约中执行声明式自动任务的统一引擎。 */
+  taskEngine?: Pick<TaskEngine, 'runWithLease'>;
+  /** 根据定时检测结果生成可选 auto_switch 任务的领域规划器。 */
+  planAutoSwitch?: AutoSwitchPlanner;
 }
 
 /** 启动即检查、按最新设置递归调度且不会重入的健康调度器。 */
@@ -122,14 +126,18 @@ export class HealthScheduler {
         if (execution.changes.eventAppended) changedResources.push('events');
         if (execution.changes.settingsUpdated)
           changedResources.push('settings');
-        const automaticResources = this.options.taskService
-          ? await this.options.taskService.runAutoSwitch(
-              execution,
-              'scheduled',
-              lease,
-              runId,
-            )
-          : [];
+        const automaticSubmission = this.options.planAutoSwitch?.(
+          execution,
+          'scheduled',
+          runId,
+        );
+        const automaticResources =
+          automaticSubmission && this.options.taskEngine
+            ? await this.options.taskEngine.runWithLease(
+                automaticSubmission,
+                lease,
+              )
+            : [];
         for (const resource of automaticResources)
           if (!changedResources.includes(resource))
             changedResources.push(resource);

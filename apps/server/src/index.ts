@@ -23,7 +23,7 @@ async function shutdown(exitCode = 0) {
     const currentRuntime = runtime;
     const currentServer = server;
     if (currentRuntime) {
-      currentRuntime.taskService.stopAccepting();
+      currentRuntime.taskEngine.stopAccepting();
       const schedulerStopped = currentRuntime.scheduler.stop();
       currentRuntime.notifier.close();
       const serverClosed = new Promise<void>((resolvePromise) => {
@@ -37,7 +37,7 @@ async function shutdown(exitCode = 0) {
       await Promise.all([
         serverClosed,
         schedulerStopped,
-        currentRuntime.taskService.waitForIdle(),
+        currentRuntime.taskEngine.waitForIdle(),
       ]);
       await currentRuntime.siteProbe.close();
       currentRuntime.store.close();

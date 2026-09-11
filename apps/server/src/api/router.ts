@@ -22,7 +22,7 @@ import {
 } from '@clash-sentinel/shared';
 import type { HealthScheduler } from '../services/health/health-scheduler.js';
 import type { SqliteStore } from '../storage/store.js';
-import type { TaskService } from '../services/task-service.js';
+import type { TaskEngine } from '../services/tasks/task-engine.js';
 import type { StatusNotificationCenter } from '../services/status-notifier.js';
 import { ApiError } from './errors.js';
 import { noopLogger, type AppLogger } from '../logging.js';
@@ -31,8 +31,8 @@ import { noopLogger, type AppLogger } from '../logging.js';
 export interface ApiRouterOptions {
   /** SQLite 数据访问门面。 */
   store: SqliteStore;
-  /** 全局串行的 Legacy 任务服务。 */
-  taskService: TaskService;
+  /** 全局串行且通过 Handler 执行业务动作的任务引擎。 */
+  taskEngine: TaskEngine;
   /** 当前进程中的定时健康检测调度器。 */
   scheduler: Pick<HealthScheduler, 'getSnapshot'>;
   /** 当前进程中的 SSE 通知和连接生命周期中心。 */
@@ -65,7 +65,7 @@ function requestBody(ctx: Context): unknown {
 
 /** 创建严格遵循共享 Schema 的业务 API 路由。 */
 export function createApiRouter(options: ApiRouterOptions) {
-  const { store, taskService, scheduler, notifier } = options;
+  const { store, taskEngine, scheduler, notifier } = options;
   const now = options.now ?? Date.now;
   const logger = options.logger ?? noopLogger;
   const streamHeartbeatMs = options.streamHeartbeatMs ?? 15_000;
@@ -198,9 +198,9 @@ export function createApiRouter(options: ApiRouterOptions) {
         ? input
         : { ...input, autoSwitchProfileUid: null };
       if (normalized.autoSwitchEnabled) {
-        if (taskService.hasActiveOperation())
+        if (taskEngine.hasActiveOperation())
           throw new ApiError(409, 'ACTION_CONFLICT', '已有操作正在执行', {
-            ...taskService.getConflictDetails(),
+            ...taskEngine.getConflictDetails(),
           });
         const snapshot = store.getHealthSnapshot();
         if (!snapshot?.lock.locked)
@@ -247,7 +247,7 @@ export function createApiRouter(options: ApiRouterOptions) {
     (type: 'health_check' | 'diagnose' | 'reset' | 'rollback') =>
     (ctx: Context) => {
       parseRequest(emptyActionRequestSchema, requestBody(ctx));
-      const task = taskService.enqueue(type, null, {
+      const task = taskEngine.enqueue(type, null, {
         requestId: String(ctx.state.requestId),
       });
       ctx.status = 202;
@@ -269,7 +269,7 @@ export function createApiRouter(options: ApiRouterOptions) {
     const candidate = diagnosis.candidates.find((item) => item.ip === input.ip);
     if (diagnosis.status !== 'testable' || !candidate?.eligible)
       throw new ApiError(409, 'INVALID_CANDIDATE', '候选 IP 不合格或已失效');
-    const task = taskService.enqueue(
+    const task = taskEngine.enqueue(
       'apply',
       { ip: input.ip },
       {

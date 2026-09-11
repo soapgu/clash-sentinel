@@ -14,7 +14,12 @@ import type {
 } from '@clash-sentinel/shared';
 import { createApp } from './app.js';
 import { LegacyAdapterError } from './legacy/adapter.js';
-import { TaskService, type LegacyOperations } from './services/task-service.js';
+import { TaskEngine } from './services/tasks/task-engine.js';
+import {
+  createTaskHandlerRegistry,
+  type LegacyOperations,
+} from './services/tasks/registry.js';
+import { AutoSwitchService } from './services/auto-switch-service.js';
 import { OperationCoordinator } from './services/operation-coordinator.js';
 import { StatusNotificationCenter } from './services/status-notifier.js';
 import { SqliteStore } from './storage/store.js';
@@ -52,14 +57,14 @@ function recordingLogger(entries: RecordedLog[]): AppLogger {
 const setups: Array<{
   root: string;
   store: SqliteStore;
-  taskService: TaskService;
+  taskEngine: TaskEngine;
   notifier: StatusNotificationCenter;
 }> = [];
 
 afterEach(async () => {
   for (const setup of setups.splice(0)) {
-    setup.taskService.stopAccepting();
-    await setup.taskService.waitForIdle();
+    setup.taskEngine.stopAccepting();
+    await setup.taskEngine.waitForIdle();
     setup.notifier.close();
     setup.store.close();
     await rm(setup.root, { recursive: true, force: true });
@@ -182,13 +187,19 @@ async function createSetup(
       };
     }),
   };
-  const taskService = new TaskService({
+  const autoSwitch = new AutoSwitchService({ store, adapter, logger });
+  const taskEngine = new TaskEngine({
     store,
-    adapter,
-    healthCheck,
     coordinator,
     notifier,
     logger,
+    handlers: createTaskHandlerRegistry({
+      store,
+      adapter,
+      healthCheck,
+      autoSwitch,
+      planAutoSwitch: () => null,
+    }),
   });
   const scheduler = {
     getSnapshot: vi.fn<() => MonitoringSnapshot>(() => ({
@@ -199,17 +210,17 @@ async function createSetup(
       nextRunAt: null,
     })),
   };
-  setups.push({ root, store, taskService, notifier });
+  setups.push({ root, store, taskEngine, notifier });
   return {
     store,
     adapter,
     coordinator,
-    taskService,
+    taskEngine,
     scheduler,
     notifier,
     app: createApp({
       store,
-      taskService,
+      taskEngine,
       scheduler,
       notifier,
       logger,
@@ -319,7 +330,7 @@ test('SSE 建连同步、保活且不受普通 API 超时限制', async () => {
   logs.length = 0;
   const streamApp = createApp({
     store: setup.store,
-    taskService: setup.taskService,
+    taskEngine: setup.taskEngine,
     scheduler: setup.scheduler,
     notifier: setup.notifier,
     requestTimeoutMs: 5,
@@ -424,7 +435,7 @@ test('站点接口动态标记过期且定时检测占槽时拒绝手动动作',
   });
   const boundaryApp = createApp({
     store: setup.store,
-    taskService: setup.taskService,
+    taskEngine: setup.taskEngine,
     scheduler: setup.scheduler,
     notifier: setup.notifier,
     now: () => Date.parse('2026-09-09T04:02:00.001Z'),
@@ -498,7 +509,7 @@ test('访问、设置和异步任务使用统一日志等级及关联键', async
     .post('/api/actions/health-check')
     .send({})
     .expect(202);
-  await setup.taskService.waitForIdle();
+  await setup.taskEngine.waitForIdle();
   await request(setup.app.callback()).get('/api/missing').expect(404);
 
   expect(logs).toEqual(
@@ -618,12 +629,12 @@ test('诊断和 apply 异步执行并持久化任务结果', async () => {
     .post('/api/actions/diagnose')
     .send({});
   expect(diagnosed.status).toBe(202);
-  await setup.taskService.waitForIdle();
+  await setup.taskEngine.waitForIdle();
   expect(setup.store.getDiagnosis()?.candidates[0]?.eligible).toBe(true);
   const applied = await request(setup.app.callback())
     .post('/api/actions/apply')
     .send({ ip: '198.51.100.20' });
-  await setup.taskService.waitForIdle();
+  await setup.taskEngine.waitForIdle();
   const task = await request(setup.app.callback()).get(
     `/api/tasks/${applied.body.data.taskId}`,
   );
@@ -662,7 +673,7 @@ test('任务生命周期按动作类型发布精确资源失效通知', async ()
       .post(`/api/actions/${item.path}`)
       .send(item.body)
       .expect(202);
-    await setup.taskService.waitForIdle();
+    await setup.taskEngine.waitForIdle();
     const taskResource = `task:${response.body.data.taskId}`;
     expect(
       notifications.map(({ reason, resources }) => ({ reason, resources })),
@@ -721,7 +732,7 @@ test('全局动作槽拒绝并发提交并公开活动任务 ID', async () => {
   expect(conflict.status).toBe(409);
   expect(conflict.body.error.details.activeTaskId).toBe(first.body.data.taskId);
   release(diagnosis());
-  await setup.taskService.waitForIdle();
+  await setup.taskEngine.waitForIdle();
 });
 
 test('后台稳定错误写入失败任务且 reset 关闭自动切换', async () => {
@@ -741,7 +752,7 @@ test('后台稳定错误写入失败任务且 reset 关闭自动切换', async (
   const rollback = await request(setup.app.callback())
     .post('/api/actions/rollback')
     .send({});
-  await setup.taskService.waitForIdle();
+  await setup.taskEngine.waitForIdle();
   expect(setup.store.getTask(rollback.body.data.taskId)).toMatchObject({
     status: 'failed',
     errorCode: 'NO_BACKUP',
@@ -774,7 +785,7 @@ test('后台稳定错误写入失败任务且 reset 关闭自动切换', async (
     autoSwitchProfileUid: 'profile-main',
   });
   await request(setup.app.callback()).post('/api/actions/reset').send({});
-  await setup.taskService.waitForIdle();
+  await setup.taskEngine.waitForIdle();
   expect(setup.store.getSettings()).toMatchObject({
     autoSwitchEnabled: false,
     autoSwitchProfileUid: null,
@@ -796,7 +807,7 @@ test('非法 JSON、请求超时和内部异常不泄露原文', async () => {
   expect(invalid.body.error.code).toBe('INVALID_JSON');
   const timeoutApp = createApp({
     store: setup.store,
-    taskService: setup.taskService,
+    taskEngine: setup.taskEngine,
     scheduler: setup.scheduler,
     notifier: setup.notifier,
     requestTimeoutMs: 5,
