@@ -45,8 +45,8 @@ state_value(){ [ -f "$MONITOR_STATE" ]&&awk -F '\t' -v k="$1" '$1==k{print $2;ex
 write_monitor_state(){
  local tmp="$MONITOR_STATE.tmp.$$"
  safe_dirs
- printf 'status\t%s\nchecked_epoch\t%s\nchecked_at\t%s\ninternet_success\t%s\ninternet_total\t%s\ncurrent_ip\t%s\nconsecutive_failures\t%s\nrecommended_ip\t%s\nnotified_signature\t%s\nnotification_at\t%s\n' \
-  "$1" "$(date +%s)" "$(date '+%Y-%m-%d %H:%M:%S %z')" "$2" "$3" "$4" "$5" "$6" "$7" "$8">"$tmp"
+ printf 'status\t%s\nchecked_epoch\t%s\nchecked_at\t%s\ninternet_success\t%s\ninternet_total\t%s\ncurrent_ip\t%s\nconsecutive_failures\t%s\nrecommended_ip\t%s\nnotified_signature\t%s\nnotification_at\t%s\nprofile_uid\t%s\nraw_fingerprint\t%s\nidentity_changed\t%s\n' \
+  "$1" "$(date +%s)" "$(date '+%Y-%m-%d %H:%M:%S %z')" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}">"$tmp"
  chmod 600 "$tmp" 2>/dev/null||true;mv "$tmp" "$MONITOR_STATE"
 }
 
@@ -113,11 +113,12 @@ connectivity_check(){
 }
 
 current_lock(){
- local meta uid name raw script sp ip domain
+ local meta uid name raw script sp ip domain rawpath hash
  check_files;meta=$(current_profile)||return 1;IFS="$TAB" read -r uid name raw script<<<"$meta";sp="$APP_DIR/profiles/$script"
  [ -f "$sp" ]||return 1;ip=$(managed pinnedIp "$sp");domain=$(managed domain "$sp")
  [ -n "$domain" ]&&[ -n "$ip" ]&&is_ipv4 "$ip"||return 1
- printf '%s\t%s\t%s\n' "$domain" "$ip" "$APP_DIR/profiles/$raw"
+ rawpath="$APP_DIR/profiles/$raw";[ -f "$rawpath" ]||return 1;hash=$(fingerprint "$rawpath")
+ printf '%s\t%s\t%s\t%s\t%s\n' "$domain" "$ip" "$rawpath" "$uid" "$hash"
 }
 quick_entry_check(){
  local ip=$1 domain=$2 raw=$3 work nodes ports samples p
@@ -254,36 +255,28 @@ reset_lock(){
  printf '%s\n' "$backup">"$CURRENT_BACKUP";chmod 600 "$CURRENT_BACKUP" 2>/dev/null||true;rm -rf "$work";log "已恢复当前订阅的原始入口：$domain";log 'Mihomo已重载，本地代理验证通过。';log "备份：$backup"
 }
 health_check(){
- local notify=${1:-no} lock domain ip raw failures status recommended signature oldsig oldtime oldstatus oldip rc success total
+ local notify=${1:-no} lock domain ip raw uid hash failures status recommended signature oldsig oldtime oldstatus oldip olduid oldhash identity rc success total
  need curl;need nc;need ruby;safe_dirs
  positive_int "$CONNECTIVITY_TIMEOUT"||die 'CLASH_ENTRY_CONNECTIVITY_TIMEOUT 必须是正整数';positive_int "$FAIL_THRESHOLD"||die 'CLASH_ENTRY_FAIL_THRESHOLD 必须是正整数'
  lock=$(current_lock)||die '当前订阅尚未锁定入口 IP，请先执行 diagnose 和 apply'
- IFS="$TAB" read -r domain ip raw<<<"$lock";failures=$(state_value consecutive_failures);failures=${failures:-0};oldsig=$(state_value notified_signature);oldtime=$(state_value notification_at);oldstatus=$(state_value status);oldip=$(state_value current_ip)
+ IFS="$TAB" read -r domain ip raw uid hash<<<"$lock";failures=$(state_value consecutive_failures);failures=${failures:-0};oldsig=$(state_value notified_signature);oldtime=$(state_value notification_at);oldstatus=$(state_value status);oldip=$(state_value current_ip);olduid=$(state_value profile_uid);oldhash=$(state_value raw_fingerprint);identity=''
  case "$failures" in ''|*[!0-9]*)failures=0;;esac
+ if [ -n "$olduid" ]&&[ "$olduid" != "$uid" ];then identity=profile;failures=0;oldsig='';oldtime='';oldstatus='';rm -f "$LATEST_REPORT"
+ elif [ -n "$oldhash" ]&&[ "$oldhash" != "$hash" ];then identity=content;failures=0;oldsig='';oldtime='';oldstatus='';rm -f "$LATEST_REPORT";fi
  if [ -n "$oldip" ]&&[ "$oldip" != "$ip" ];then failures=0;oldsig='';oldtime='';oldstatus='';fi
  if connectivity_check;then rc=0;else rc=$?;fi;success=$CONNECTIVITY_SUCCESS;total=$CONNECTIVITY_TOTAL
  if [ "$rc" -ne 0 ];then
   [ "$rc" -eq 2 ]&&status=internet_uncertain||status=internet_down
-  write_monitor_state "$status" "$success" "$total" "$ip" "$failures" "$(state_value recommended_ip)" "$oldsig" "$oldtime"
+  write_monitor_state "$status" "$success" "$total" "$ip" "$failures" '' "$oldsig" "$oldtime" "$uid" "$hash" "$identity"
   log "健康状态：${status}（国内站点可达 ${success}/${total}，未判断入口 IP）";return 0
  fi
  if quick_entry_check "$ip" "$domain" "$raw";then
-  write_monitor_state healthy "$success" "$total" "$ip" 0 '' '' ''
+  write_monitor_state healthy "$success" "$total" "$ip" 0 '' '' '' "$uid" "$hash" "$identity"
   log "健康状态：healthy（互联网可达 ${success}/${total}，入口 ${ip} 正常）";return 0
  fi
  failures=$((failures+1));status=entry_suspected;recommended='';signature=''
- if [ "$failures" -ge "$FAIL_THRESHOLD" ];then
-  status=entry_down
-  if [ "$oldstatus" = entry_down ]&&[ "$oldip" = "$ip" ]&&[ -n "$(state_value recommended_ip)" ];then recommended=$(state_value recommended_ip);else
-   diagnose >/dev/null
-   [ -f "$LATEST_REPORT" ]&&[ "$(rv '# status')" = testable ]&&recommended=$(recommended_other "$ip")
-  fi
-  if [ -n "$recommended" ];then
-   signature="$ip->$recommended"
-   if [ "$notify" = yes ]&&[ "$signature" != "$oldsig" ];then send_notification "$ip" "$recommended";oldtime=$(date '+%Y-%m-%d %H:%M:%S %z');oldsig=$signature;fi
-  fi
- fi
- write_monitor_state "$status" "$success" "$total" "$ip" "$failures" "$recommended" "$oldsig" "$oldtime"
+ if [ "$failures" -ge "$FAIL_THRESHOLD" ];then status=entry_down;fi
+ write_monitor_state "$status" "$success" "$total" "$ip" "$failures" '' "$oldsig" "$oldtime" "$uid" "$hash" "$identity"
  log "健康状态：${status}（互联网可达 ${success}/${total}，入口连续失败 ${failures} 次，推荐=${recommended:-无}）"
 }
 switch_ip(){

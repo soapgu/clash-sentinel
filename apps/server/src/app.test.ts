@@ -304,7 +304,7 @@ test('定时监测接口返回内存快照且重复读取没有副作用', async
     expect(
       (await request(setup.app.callback()).get('/api/monitoring')).body.data
         .monitoring,
-    ).toEqual(expected);
+    ).toEqual({ ...expected, activeTaskId: null });
   }
   expect(setup.scheduler.getSnapshot).toHaveBeenCalledTimes(states.length);
   expect(setup.adapter.getStatus).not.toHaveBeenCalled();

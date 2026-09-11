@@ -149,8 +149,14 @@ export class LegacyAdapter {
    * @returns 类型化健康状态、连续失败次数和可选推荐 IP。
    * @throws {LegacyAdapterError} 命令失败、超时、状态文件缺失或格式非法时抛出。
    */
-  async healthCheck(): Promise<HealthCheckResult> {
-    await this.run('health', []);
+  async healthCheck(failureThreshold?: number): Promise<HealthCheckResult> {
+    await this.run(
+      'health',
+      [],
+      failureThreshold === undefined
+        ? undefined
+        : { CLASH_ENTRY_FAIL_THRESHOLD: String(failureThreshold) },
+    );
     const state = await this.readRequiredFile(
       resolve(this.options.stateDir, 'monitor-state.tsv'),
       '监控状态不存在',
@@ -242,6 +248,7 @@ export class LegacyAdapter {
   private async run(
     command: LegacyCommand,
     extraArgs: readonly string[],
+    environmentOverrides?: NodeJS.ProcessEnv,
   ): Promise<CommandOutput> {
     const args = [command, ...extraArgs];
     const timeoutMs =
@@ -258,6 +265,7 @@ export class LegacyAdapter {
       CLASH_ENTRY_STATE_DIR: this.options.stateDir,
       CLASH_ENTRY_REPORT_DIR: this.options.reportDir,
       CLASH_ENTRY_BACKUP_DIR: this.options.backupDir,
+      ...environmentOverrides,
     };
 
     return await new Promise<CommandOutput>((resolvePromise, rejectPromise) => {

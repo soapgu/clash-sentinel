@@ -446,7 +446,7 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
 
 > 状态：Step 8 已实现契约。
 
-读取当前设置和 `HealthScheduler` 在本次进程生命周期内维护的运行态。该接口没有副作用，不执行 Shell 或网络检测，也不创建任务或事件。
+读取当前设置、`HealthScheduler` 在本次进程生命周期内维护的运行态，以及当前占用全局操作租约的任务 ID。该接口没有副作用，不执行 Shell 或网络检测，也不创建任务或事件。
 
 `state` 只允许以下三个值：
 
@@ -456,7 +456,7 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
 
 通常 `waiting` 和 `running` 对应 `enabled=true`，`disabled` 对应 `enabled=false`。如果用户在一轮定时检测运行期间关闭监测，当前轮不会被强制中断：接口暂时返回 `enabled=false, state=running`，本轮结束并保存结果后再转为 `disabled`，且不安排后续检测。
 
-时间字段均为 ISO 8601 字符串或 `null`。`lastStartedAt` 表示最近一次定时轮次的开始时间，`lastCompletedAt` 表示最近一次定时轮次的结束时间；后者无论该轮成功还是整体失败都会更新，因此不代表检测结果健康，也不包含手动健康检测。`nextRunAt` 必须来自调度器实际安排的下一次执行时间，客户端不得根据检测间隔自行推算。
+时间字段均为 ISO 8601 字符串或 `null`。`lastStartedAt` 表示最近一次定时轮次的开始时间，`lastCompletedAt` 表示最近一次定时轮次的结束时间；后者无论该轮成功还是整体失败都会更新，因此不代表检测结果健康，也不包含手动健康检测。`nextRunAt` 必须来自调度器实际安排的下一次执行时间，客户端不得根据检测间隔自行推算。`activeTaskId` 是当前手动或自动任务 UUID；定时健康检测自身不创建任务，因此该字段为 `null`。新页面可据此恢复正在执行的自动任务面板。
 
 监测已开启并等待下一轮：
 
@@ -469,7 +469,8 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
       "state": "waiting",
       "lastStartedAt": "2026-09-09T02:26:02.000Z",
       "lastCompletedAt": "2026-09-09T02:26:18.000Z",
-      "nextRunAt": "2026-09-09T02:27:18.000Z"
+      "nextRunAt": "2026-09-09T02:27:18.000Z",
+      "activeTaskId": null
     }
   }
 }
@@ -486,7 +487,8 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
       "state": "running",
       "lastStartedAt": "2026-09-09T02:27:18.000Z",
       "lastCompletedAt": "2026-09-09T02:26:18.000Z",
-      "nextRunAt": null
+      "nextRunAt": null,
+      "activeTaskId": null
     }
   }
 }
@@ -503,7 +505,8 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
       "state": "running",
       "lastStartedAt": "2026-09-09T02:27:18.000Z",
       "lastCompletedAt": "2026-09-09T02:26:18.000Z",
-      "nextRunAt": null
+      "nextRunAt": null,
+      "activeTaskId": null
     }
   }
 }
@@ -520,7 +523,8 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
       "state": "disabled",
       "lastStartedAt": "2026-09-09T02:26:02.000Z",
       "lastCompletedAt": "2026-09-09T02:26:18.000Z",
-      "nextRunAt": null
+      "nextRunAt": null,
+      "activeTaskId": null
     }
   }
 }
@@ -537,7 +541,8 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
       "state": "waiting",
       "lastStartedAt": null,
       "lastCompletedAt": null,
-      "nextRunAt": null
+      "nextRunAt": null,
+      "activeTaskId": null
     }
   }
 }
@@ -591,7 +596,7 @@ data: {"version":1,"id":3,"occurredAt":"2026-09-09T04:00:00.000Z","reason":"moni
 - 正常完成：`monitoring_completed` 始终包含 `monitoring`，并根据健康检查返回的变化摘要追加实际成功写入的 `status`、`sites`、`candidates` 和 `events`；`candidates` 仅在入口故障诊断被成功替换时出现，`events` 仅在状态变化事件成功落库时出现。
 - 整体轮次失败：保守通知可能已经部分写入的 `monitoring,status,sites`，不通知 `candidates`；只有定时失败事件成功落库时才追加 `events`。
 
-手动任务的 `task_queued` 和 `task_started` 只包含 `task:<UUID>`。终态映射如下：
+手动任务的 `task_queued` 和 `task_started` 只包含 `task:<UUID>`。自动任务入队时还包含 `monitoring`，使新页面能够读取 `activeTaskId`；开始通知只包含 `task:<UUID>`。终态映射如下：
 
 | 任务结果 | 失效资源 |
 | --- | --- |
@@ -600,6 +605,8 @@ data: {"version":1,"id":3,"occurredAt":"2026-09-09T04:00:00.000Z","reason":"moni
 | `apply` 成功 | `task:<UUID>,status,events` |
 | `reset` 成功 | `task:<UUID>,status,settings,events` |
 | `rollback` 成功 | `task:<UUID>,status,events` |
+| `auto_switch` 成功或无不同候选 | `task:<UUID>,monitoring,status,candidates,events` 中实际变化的资源 |
+| `auto_switch` 恢复失败、状态未知或被服务中断 | 在实际变化资源之外追加 `settings` |
 | 任一任务失败 | `task:<UUID>,events` |
 
 普通 `PUT /api/settings` 成功或失败均不发送 SSE。成功响应已经包含完整设置，客户端应直接更新缓存并主动刷新 `GET /api/monitoring`。`reset` 会在任务内部关闭自动切换，因此其成功通知仍包含 `settings`。
@@ -650,7 +657,7 @@ data: {"version":1,"id":3,"occurredAt":"2026-09-09T04:00:00.000Z","reason":"moni
 
 ### 5.1 通用任务语义
 
-`health-check`、`diagnose`、`apply`、`reset`、`rollback` 共用一个进程内全局动作槽。检查、创建任务和占用槽之间不经过异步等待；已有动作时返回 `409 ACTION_CONFLICT`。
+`health-check`、`diagnose`、`apply`、`reset`、`rollback` 与内部 `auto_switch` 共用一个进程内全局动作槽。检查、创建任务和占用槽之间不经过异步等待；已有动作时返回 `409 ACTION_CONFLICT`。`auto_switch` 没有独立 POST 接口，只能由刚完成的手动或定时健康检测触发。
 
 成功受理统一返回 HTTP `202`：
 
@@ -695,7 +702,7 @@ stateDiagram-v2
 
 ### 5.2 `POST /api/actions/health-check`
 
-请求体必须为 `{}`。后台执行与定时监测相同的完整六站检测；国内至少两个站点成功且入口已锁定时，再执行 Legacy `healthCheck()`，补齐订阅、入口和连续失败信息，保存站点历史及健康快照。保留已有冷却截止时间。
+请求体必须为 `{}`。后台执行与定时监测相同的完整六站检测；国内至少两个站点成功且入口已锁定时，再执行 Legacy `healthCheck()`，补齐订阅、入口和连续失败信息，保存站点历史及健康快照。失败首次达到当前设置阈值时，由 Node.js 编排严格诊断并保存候选；Legacy 健康命令本身不再隐式诊断。健康任务持久化完成后仍持有原操作租约，并使用刚保存的快照评估自动切换。保留已有冷却截止时间。
 
 ```json
 {}
@@ -740,6 +747,8 @@ API 入队前要求 IP 是严格 IPv4，最近诊断状态为 `testable`，且�
 ### 5.7 各动作完成后的任务结果
 
 动作受理响应中的 `taskId` 用于查询 `GET /api/tasks/:id`。完整任务结构与 3.7 节相同；不同动作成功时的 `result` 如下。
+
+内部自动处理同样持久化为 `type=auto_switch` 的任务，但没有对应动作接口。其 `result` 使用统一配置操作结果：实际切换成功为 `status=applied`，没有不同于当前 IP 的合格候选为 `status=no_change`。失败任务通过 `recoveryStatus` 区分修改前失败、安全恢复、恢复失败和未知状态；后两种情况服务同时关闭自动切换。
 
 诊断成功任务：
 

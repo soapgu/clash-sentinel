@@ -2,10 +2,12 @@ import type { ApiErrorDetails } from '@clash-sentinel/shared';
 
 /** 当前占用全局 Legacy 执行槽的操作。 */
 export type ActiveOperation =
-  { kind: 'manual_task'; taskId: string } | { kind: 'scheduled_health' };
+  { kind: 'task'; taskId: string } | { kind: 'scheduled_health' };
 
 /** 一次全局执行槽租约；完成工作后必须释放。 */
 export interface OperationLease {
+  /** 在不释放互斥槽的前提下，将当前健康轮次切换为指定任务。 */
+  replaceWithTask(taskId: string): void;
   /** 幂等释放当前租约。 */
   release(): void;
 }
@@ -24,7 +26,7 @@ export class OperationCoordinator {
 
   /** @returns 当前冲突响应允许公开的脱敏详情。 */
   getConflictDetails(): ApiErrorDetails | undefined {
-    if (this.active?.kind === 'manual_task')
+    if (this.active?.kind === 'task')
       return { activeTaskId: this.active.taskId };
     if (this.active?.kind === 'scheduled_health')
       return { activeOperation: 'scheduled_health' };
@@ -38,7 +40,7 @@ export class OperationCoordinator {
    * @returns 成功租约；槽已被占用时返回 null。
    */
   tryAcquireManual(taskId: string): OperationLease | null {
-    return this.acquire({ kind: 'manual_task', taskId });
+    return this.acquire({ kind: 'task', taskId });
   }
 
   /** @returns 定时健康检测租约；槽已被占用时返回 null。 */
@@ -62,6 +64,10 @@ export class OperationCoordinator {
     });
     let released = false;
     return {
+      replaceWithTask: (taskId) => {
+        if (released || this.activeToken !== token) return;
+        this.active = { kind: 'task', taskId };
+      },
       release: () => {
         if (released) return;
         released = true;

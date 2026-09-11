@@ -291,6 +291,37 @@ describe('SqliteStore', () => {
     reopened.close();
   });
 
+  test('自动切换排队或运行中重启时关闭开关并记录关键事件', async () => {
+    const setup = await createStore();
+    setup.store.updateSettings({
+      autoSwitchEnabled: true,
+      autoSwitchProfileUid: 'profile-main',
+    });
+    const running = setup.store.startTask(
+      setup.store.createTask('auto_switch').id,
+    );
+    const queued = setup.store.createTask('auto_switch');
+    setup.store.close();
+    const reopened = new SqliteStore({ databasePath: setup.databasePath });
+    expect(reopened.getTask(running.id)).toMatchObject({
+      status: 'interrupted',
+      recoveryStatus: 'unknown',
+    });
+    expect(reopened.getTask(queued.id)).toMatchObject({
+      status: 'interrupted',
+      recoveryStatus: 'unknown',
+    });
+    expect(reopened.getSettings()).toMatchObject({
+      autoSwitchEnabled: false,
+      autoSwitchProfileUid: null,
+    });
+    expect(reopened.listEvents(1)[0]).toMatchObject({
+      type: 'auto_switch_interrupted',
+      severity: 'critical',
+    });
+    reopened.close();
+  });
+
   test('数量清理保留当前快照和最近历史', async () => {
     const setup = await createStore();
     const base = Date.parse('2026-09-08T00:00:00.000Z');

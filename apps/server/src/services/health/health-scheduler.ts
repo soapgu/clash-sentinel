@@ -8,6 +8,7 @@ import type { StatusNotifier } from '../status-notifier.js';
 import type { HealthCheckService } from './health-check.js';
 import { randomUUID } from 'node:crypto';
 import { noopLogger, type AppLogger } from '../../logging.js';
+import type { TaskService } from '../task-service.js';
 
 /** 定时健康检测调度器依赖。 */
 export interface HealthSchedulerOptions {
@@ -23,6 +24,7 @@ export interface HealthSchedulerOptions {
   now?: () => number;
   /** 记录调度计划、执行、跳过和失败。 */
   logger?: AppLogger;
+  taskService?: Pick<TaskService, 'runAutoSwitch'>;
 }
 
 /** 启动即检查、按最新设置递归调度且不会重入的健康调度器。 */
@@ -56,12 +58,14 @@ export class HealthScheduler {
         ? 'waiting'
         : 'disabled';
     const nextRunAt = state === 'waiting' ? this.nextTickAt : null;
+    const active = this.options.coordinator.getActive();
     return {
       enabled,
       state,
       lastStartedAt: this.lastStartedAt,
       lastCompletedAt: this.lastCompletedAt,
       nextRunAt,
+      activeTaskId: active?.kind === 'task' ? active.taskId : null,
     };
   }
 
@@ -110,12 +114,25 @@ export class HealthScheduler {
     let failed = false;
     this.currentRun = this.options.healthCheck
       .run('scheduled', runId)
-      .then((execution) => {
+      .then(async (execution) => {
         if (execution.changes.statusUpdated) changedResources.push('status');
         if (execution.changes.sitesUpdated) changedResources.push('sites');
         if (execution.changes.candidatesUpdated)
           changedResources.push('candidates');
         if (execution.changes.eventAppended) changedResources.push('events');
+        if (execution.changes.settingsUpdated)
+          changedResources.push('settings');
+        const automaticResources = this.options.taskService
+          ? await this.options.taskService.runAutoSwitch(
+              execution,
+              'scheduled',
+              lease,
+              runId,
+            )
+          : [];
+        for (const resource of automaticResources)
+          if (!changedResources.includes(resource))
+            changedResources.push(resource);
       })
       .catch((error) => {
         failed = true;
@@ -137,7 +154,9 @@ export class HealthScheduler {
         this.currentRun = null;
         if (!this.stopped)
           this.schedule(this.options.store.getSettings().checkIntervalMs);
-        this.options.notifier.publish('monitoring_completed', changedResources);
+        this.options.notifier.publish('monitoring_completed', [
+          ...new Set(changedResources),
+        ]);
         if (!failed)
           this.logger.info('health:scheduler', 'run completed', {
             runId,

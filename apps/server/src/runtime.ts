@@ -10,6 +10,7 @@ import { TaskService } from './services/task-service.js';
 import { SqliteStore } from './storage/store.js';
 import { createAppLogger, type AppLogger } from './logging.js';
 import { loadServerConfig, type ServerConfig } from './config.js';
+import { AutoSwitchService } from './services/auto-switch-service.js';
 
 /** 生产 Koa 应用和退出流程共同持有的运行时依赖。 */
 export interface RuntimeDependencies {
@@ -68,6 +69,11 @@ export function createRuntimeDependencies(
     legacy: adapter,
     logger,
   });
+  const autoSwitch = new AutoSwitchService({
+    store,
+    adapter,
+    logger,
+  });
   const taskService = new TaskService({
     store,
     adapter,
@@ -75,6 +81,7 @@ export function createRuntimeDependencies(
     coordinator,
     notifier,
     logger,
+    autoSwitch,
   });
   return {
     store,
@@ -85,6 +92,7 @@ export function createRuntimeDependencies(
       healthCheck,
       notifier,
       logger,
+      taskService,
     }),
     notifier,
     siteProbe,

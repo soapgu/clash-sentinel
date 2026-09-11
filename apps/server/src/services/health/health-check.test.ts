@@ -103,8 +103,11 @@ async function setup(
       currentIp: '198.51.100.20',
       consecutiveFailures: 0,
       recommendedIp: null,
+      profileUid: 'profile-demo',
+      rawFingerprint: 'a'.repeat(64),
+      identityChanged: null,
     })),
-    readLatestDiagnosis: vi.fn(async () => diagnosis()),
+    diagnose: vi.fn(async () => diagnosis()),
   };
   const service = new HealthCheckService({
     store,
@@ -125,6 +128,7 @@ test('两个国内站点成功时评价入口并保存全部六站', async () =>
     sitesUpdated: true,
     candidatesUpdated: false,
     eventAppended: false,
+    settingsUpdated: false,
   });
   expect(value.legacy.healthCheck).toHaveBeenCalledOnce();
   expect(value.store.listSiteHistory('taobao')).toHaveLength(1);
@@ -160,7 +164,7 @@ test('断网或不确定时不评价入口并保留失败计数', async () => {
   }
 });
 
-test('入口达到失败阈值后读取现有报告而不再次诊断', async () => {
+test('入口首次达到失败阈值后由 Node 执行严格诊断', async () => {
   const value = await setup();
   value.legacy.healthCheck.mockResolvedValue({
     status: 'entry_down',
@@ -169,13 +173,16 @@ test('入口达到失败阈值后读取现有报告而不再次诊断', async ()
     internetTotal: 3,
     currentIp: '198.51.100.20',
     consecutiveFailures: 3,
-    recommendedIp: '198.51.100.21',
+    recommendedIp: null,
+    profileUid: 'profile-demo',
+    rawFingerprint: 'a'.repeat(64),
+    identityChanged: null,
   });
   await expect(value.service.run('scheduled')).resolves.toMatchObject({
     snapshot: { status: 'entry_down', consecutiveFailures: 3 },
     changes: { candidatesUpdated: true, eventAppended: true },
   });
-  expect(value.legacy.readLatestDiagnosis).toHaveBeenCalledOnce();
+  expect(value.legacy.diagnose).toHaveBeenCalledOnce();
   expect(value.store.getDiagnosis()?.recommendedIp).toBe('198.51.100.21');
 });
 
@@ -223,6 +230,9 @@ test('入口异常优先于单个海外失败且海外结果不改变失败计�
     currentIp: '198.51.100.20',
     consecutiveFailures: 2,
     recommendedIp: null,
+    profileUid: 'profile-demo',
+    rawFingerprint: 'a'.repeat(64),
+    identityChanged: null,
   });
   await expect(value.service.run('manual')).resolves.toMatchObject({
     snapshot: { status: 'entry_suspected', consecutiveFailures: 2 },
@@ -251,12 +261,67 @@ test('阈值诊断报告读取失败时保留 entry_down 快照并使本轮失�
     currentIp: '198.51.100.20',
     consecutiveFailures: 3,
     recommendedIp: null,
+    profileUid: 'profile-demo',
+    rawFingerprint: 'a'.repeat(64),
+    identityChanged: null,
   });
-  value.legacy.readLatestDiagnosis.mockRejectedValue(
-    new Error('invalid report'),
-  );
+  value.legacy.diagnose.mockRejectedValue(new Error('invalid report'));
   await expect(value.service.run('scheduled')).rejects.toThrow(
     'invalid report',
   );
   expect(value.store.getHealthSnapshot()?.status).toBe('entry_down');
+});
+
+test('订阅 UID 变化清空诊断和失败计数并关闭自动切换', async () => {
+  const value = await setup();
+  value.store.replaceDiagnosis(diagnosis());
+  value.store.updateSettings({
+    autoSwitchEnabled: true,
+    autoSwitchProfileUid: 'profile-old',
+  });
+  value.store.upsertHealthSnapshot({
+    ...(await value.service.run('manual')).snapshot,
+    profile: { uid: 'profile-old', name: '旧订阅' },
+    consecutiveFailures: 2,
+  });
+  const execution = await value.service.run('manual');
+  expect(execution.snapshot.consecutiveFailures).toBe(0);
+  expect(execution.changes).toMatchObject({
+    candidatesUpdated: true,
+    settingsUpdated: true,
+    eventAppended: true,
+  });
+  expect(value.store.getDiagnosis()).toBeNull();
+  expect(value.store.getSettings()).toMatchObject({
+    autoSwitchEnabled: false,
+    autoSwitchProfileUid: null,
+  });
+});
+
+test('同一 UID 文件指纹变化废弃诊断但保留自动开关', async () => {
+  const value = await setup();
+  value.store.replaceDiagnosis(diagnosis());
+  value.store.updateSettings({
+    autoSwitchEnabled: true,
+    autoSwitchProfileUid: 'profile-demo',
+  });
+  value.legacy.healthCheck.mockResolvedValue({
+    status: 'healthy',
+    checkedAt: '2026-09-09 12:00:00 +0800',
+    internetSuccess: 3,
+    internetTotal: 3,
+    currentIp: '198.51.100.20',
+    consecutiveFailures: 0,
+    recommendedIp: null,
+    profileUid: 'profile-demo',
+    rawFingerprint: 'b'.repeat(64),
+    identityChanged: 'content',
+  });
+  const execution = await value.service.run('manual');
+  expect(execution.changes).toMatchObject({
+    candidatesUpdated: true,
+    settingsUpdated: false,
+  });
+  expect(value.store.getDiagnosis()).toBeNull();
+  expect(value.store.getSettings().autoSwitchEnabled).toBe(true);
 });

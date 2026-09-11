@@ -5,6 +5,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import type {
   HealthSnapshot,
   StreamNotification,
+  StreamResource,
 } from '@clash-sentinel/shared';
 import { SqliteStore } from '../../storage/store.js';
 import { OperationCoordinator } from '../operation-coordinator.js';
@@ -26,7 +27,12 @@ afterEach(async () => {
 });
 
 /** 创建测试调度器及其隔离存储。 */
-async function setup(run: () => Promise<HealthCheckExecution>) {
+async function setup(
+  run: () => Promise<HealthCheckExecution>,
+  taskService?: {
+    runAutoSwitch: ReturnType<typeof vi.fn<() => Promise<StreamResource[]>>>;
+  },
+) {
   const root = await mkdtemp(join(tmpdir(), 'clash-scheduler-'));
   const store = new SqliteStore({ databasePath: join(root, 'scheduler.db') });
   cleanups.push({ root, store });
@@ -38,8 +44,9 @@ async function setup(run: () => Promise<HealthCheckExecution>) {
     coordinator,
     healthCheck,
     notifier,
+    taskService,
   });
-  return { store, coordinator, healthCheck, scheduler, notifier };
+  return { store, coordinator, healthCheck, scheduler, notifier, taskService };
 }
 
 /** 返回调度测试使用的最小合法快照。 */
@@ -68,6 +75,7 @@ function execution(
       sitesUpdated: true,
       candidatesUpdated: false,
       eventAppended: false,
+      settingsUpdated: false,
       ...changes,
     },
   };
@@ -90,6 +98,7 @@ test('启动立即执行且慢轮次完成前不会重入或创建任务', async
     lastStartedAt: null,
     lastCompletedAt: null,
     nextRunAt: null,
+    activeTaskId: null,
   });
   value.scheduler.start();
   expect(notifications).toMatchObject([
@@ -102,6 +111,7 @@ test('启动立即执行且慢轮次完成前不会重入或创建任务', async
     lastStartedAt: '2026-09-09T04:00:00.000Z',
     lastCompletedAt: null,
     nextRunAt: null,
+    activeTaskId: null,
   });
   await vi.advanceTimersByTimeAsync(180_000);
   expect(value.healthCheck.run).toHaveBeenCalledOnce();
@@ -118,6 +128,7 @@ test('启动立即执行且慢轮次完成前不会重入或创建任务', async
     lastStartedAt: '2026-09-09T04:00:00.000Z',
     lastCompletedAt: '2026-09-09T04:03:00.000Z',
     nextRunAt: '2026-09-09T04:04:00.000Z',
+    activeTaskId: null,
   });
   await value.scheduler.stop();
   expect(value.scheduler.getSnapshot().nextRunAt).toBeNull();
@@ -143,6 +154,7 @@ test('手动任务占槽时静默跳过，监测关闭时不执行', async () =>
     lastStartedAt: null,
     lastCompletedAt: null,
     nextRunAt: '2026-09-09T04:01:00.000Z',
+    activeTaskId: '550e8400-e29b-41d4-a716-446655440000',
   });
   await value.scheduler.stop();
   lease.release();
@@ -157,6 +169,7 @@ test('手动任务占槽时静默跳过，监测关闭时不执行', async () =>
     lastStartedAt: null,
     lastCompletedAt: null,
     nextRunAt: null,
+    activeTaskId: null,
   });
   await disabled.scheduler.stop();
 });
@@ -174,6 +187,28 @@ test('完成通知仅包含健康检查摘要报告的变化资源', async () =>
   expect(notifications.at(-1)).toMatchObject({
     reason: 'monitoring_completed',
     resources: ['monitoring', 'status', 'sites', 'candidates', 'events'],
+  });
+  await value.scheduler.stop();
+});
+
+test('定时检测完成后在同一租约中执行自动切换并合并变化资源', async () => {
+  vi.useFakeTimers();
+  const taskService = {
+    runAutoSwitch: vi.fn(
+      async () => ['settings', 'events'] as StreamResource[],
+    ),
+  };
+  const value = await setup(async () => execution(), taskService);
+  const notifications: StreamNotification[] = [];
+  value.notifier.subscribe((notification) => notifications.push(notification));
+  notifications.length = 0;
+  value.scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(taskService.runAutoSwitch).toHaveBeenCalledOnce();
+  expect(taskService.runAutoSwitch.mock.calls[0]?.[1]).toBe('scheduled');
+  expect(notifications.at(-1)).toMatchObject({
+    reason: 'monitoring_completed',
+    resources: ['monitoring', 'status', 'sites', 'settings', 'events'],
   });
   await value.scheduler.stop();
 });
@@ -209,6 +244,7 @@ test('运行期间关闭监测会完成本轮再转为暂停', async () => {
     lastStartedAt: '2026-09-09T04:00:00.000Z',
     lastCompletedAt: null,
     nextRunAt: null,
+    activeTaskId: null,
   });
   vi.setSystemTime('2026-09-09T04:00:15.000Z');
   resolveRun(execution());
@@ -219,6 +255,7 @@ test('运行期间关闭监测会完成本轮再转为暂停', async () => {
     lastStartedAt: '2026-09-09T04:00:00.000Z',
     lastCompletedAt: '2026-09-09T04:00:15.000Z',
     nextRunAt: null,
+    activeTaskId: null,
   });
   await vi.advanceTimersByTimeAsync(60_000);
   expect(value.healthCheck.run).toHaveBeenCalledOnce();
@@ -242,6 +279,7 @@ test('整轮失败也记录完成时间并继续真实调度', async () => {
     lastStartedAt: '2026-09-09T04:00:00.000Z',
     lastCompletedAt: '2026-09-09T04:00:00.000Z',
     nextRunAt: '2026-09-09T04:01:00.000Z',
+    activeTaskId: null,
   });
   expect(value.store.listEvents()).toHaveLength(1);
   expect(notifications.at(-1)).toMatchObject({

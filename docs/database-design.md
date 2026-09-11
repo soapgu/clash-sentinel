@@ -291,6 +291,7 @@ SQLite：执行 NOT NULL、CHECK、主键、唯一键和外键约束
 
 首次打开数据库时使用 `INSERT OR IGNORE` 写入默认值：检测间隔 60 秒、请求超时 5 秒、失败阈值
 3 次、冷却 5 分钟、监测开启、自动切换关闭且未绑定订阅。
+自动切换开启时绑定当前健康快照的订阅 UID；恢复失败、恢复状态未知、订阅 UID 变化或自动任务被服务重启中断时，服务会关闭开关并清空该 UID。
 
 ### 5.3 `health_snapshot`
 
@@ -489,17 +490,20 @@ stateDiagram-v2
     running --> succeeded: completeTask
     queued --> failed: failTask
     running --> failed: failTask
+    queued --> interrupted: 服务启动恢复
     running --> interrupted: 服务启动恢复
 ```
 
 状态更新 SQL 在 `WHERE` 中包含允许的前置状态；未更新到记录时，存储层区分“任务不存在”和
 “当前状态不允许转换”。因此终态不能重复完成或重新启动。
 
-每次打开数据库时，`recoverInterruptedTasks()` 把遗留 `running` 任务更新为 `interrupted`，写入
+每次打开数据库时，`recoverInterruptedTasks()` 把遗留 `queued` 或 `running` 任务更新为 `interrupted`，写入
 结束时间、`SERVICE_RESTARTED` 错误码和“任务未自动重放”说明。成功、失败等已有终态保持不变，
 配置修改任务绝不因服务重启而自动执行第二次。
 配置类任务在重启恢复时写入 `recovery_status=unknown`，其他任务保持 `null`。正常失败由
 Legacy 适配层根据修改边界、文件还原和 Mihomo 重载的真实结果写入恢复结论，前端不解析错误文案。
+`auto_switch` 复用同一任务表和状态转换：无不同候选以 `succeeded/no_change` 记录，诊断或修改前失败为
+`not_required`，完整恢复为 `recovered`，恢复失败或未知为 `recovery_failed/unknown`。自动处理终态写入健康快照已有的冷却截止时间，不新增表或迁移。
 
 ### 6.6 事件追加
 

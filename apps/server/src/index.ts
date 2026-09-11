@@ -23,8 +23,8 @@ async function shutdown(exitCode = 0) {
     const currentRuntime = runtime;
     const currentServer = server;
     if (currentRuntime) {
-      const schedulerStopped = currentRuntime.scheduler.stop();
       currentRuntime.taskService.stopAccepting();
+      const schedulerStopped = currentRuntime.scheduler.stop();
       currentRuntime.notifier.close();
       const serverClosed = new Promise<void>((resolvePromise) => {
         if (!currentServer?.listening) {

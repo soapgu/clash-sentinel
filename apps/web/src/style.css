@@ -653,6 +653,21 @@ h2 {
   width: 20px;
   height: 20px;
 }
+.toggle-row.emphasized {
+  margin-top: 4px;
+  padding: 0 10px;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 700;
+}
+.setting-hint {
+  margin: -6px 10px 2px;
+  color: var(--muted);
+  font-size: 0.77rem;
+  line-height: 1.5;
+}
 .input-with-unit {
   display: flex;
   align-items: center;

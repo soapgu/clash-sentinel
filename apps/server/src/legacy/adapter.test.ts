@@ -310,8 +310,28 @@ describe('LegacyAdapter', () => {
       setup.adapter({ CLASH_TEST_ENTRY_DOWN: '1' }).healthCheck(),
     ).resolves.toMatchObject({
       status: 'entry_down',
-      recommendedIp: '192.0.2.10',
+      recommendedIp: null,
     });
+  });
+
+  test('健康检查使用动态阈值并识别同订阅文件更新', async () => {
+    const setup = await fixture();
+    await setup.adapter().diagnose();
+    await setup.adapter().applyIp('198.51.100.20');
+    await expect(
+      setup.adapter({ CLASH_TEST_ENTRY_DOWN: '1' }).healthCheck(1),
+    ).resolves.toMatchObject({ status: 'entry_down' });
+    await writeFile(
+      join(setup.appDir, 'profiles/main.yaml'),
+      `${setup.raw}\n# subscription refreshed\n`,
+    );
+    await expect(setup.adapter().healthCheck(3)).resolves.toMatchObject({
+      identityChanged: 'content',
+      consecutiveFailures: 0,
+    });
+    await expect(
+      readFile(join(setup.stateDir, 'latest-report.tsv'), 'utf8'),
+    ).rejects.toThrow();
   });
 
   test('拒绝参数注入和不合格候选', async () => {

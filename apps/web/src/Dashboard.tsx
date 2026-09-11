@@ -213,6 +213,13 @@ function EntryCard({
 }) {
   const profileName = snapshot?.profile?.name ?? '尚未识别订阅';
   const healthTone = offline ? 'neutral' : toneForHealth(snapshot?.status);
+  const cooldownUntil = snapshot?.autoSwitchCooldownUntil
+    ? Date.parse(snapshot.autoSwitchCooldownUntil)
+    : 0;
+  const cooldownSeconds = Math.max(
+    0,
+    Math.ceil((cooldownUntil - Date.now()) / 1_000),
+  );
   return (
     <section
       className={`entry-card panel ${offline ? 'is-offline' : ''}`}
@@ -254,7 +261,13 @@ function EntryCard({
           </div>
           <div>
             <span>自动切换</span>
-            <strong>{settings?.autoSwitchEnabled ? '已开启' : '已关闭'}</strong>
+            <strong>
+              {settings?.autoSwitchEnabled
+                ? cooldownSeconds > 0
+                  ? `冷却 ${Math.floor(cooldownSeconds / 60)}:${String(cooldownSeconds % 60).padStart(2, '0')}`
+                  : '已开启'
+                : '已关闭'}
+            </strong>
           </div>
           <div>
             <span>状态更新</span>
@@ -492,6 +505,10 @@ function SettingsDrawer({
   saving,
   saveError,
   onSave,
+  snapshot,
+  offline,
+  autoSaving,
+  onAutoChange,
 }: {
   open: boolean;
   settings?: Settings;
@@ -500,6 +517,10 @@ function SettingsDrawer({
   saving: boolean;
   saveError: string | null;
   onSave: (settings: SettingsUpdate) => void;
+  snapshot: HealthSnapshot | null | undefined;
+  offline: boolean;
+  autoSaving: boolean;
+  onAutoChange: (enabled: boolean) => void;
 }) {
   const [draft, setDraft] = useState({
     monitoringEnabled: true,
@@ -509,8 +530,14 @@ function SettingsDrawer({
     cooldownMinutes: '5',
   });
   const [validationError, setValidationError] = useState<string | null>(null);
+  const initialized = useRef(false);
   useEffect(() => {
-    if (!open || !settings) return;
+    if (!open) {
+      initialized.current = false;
+      return;
+    }
+    if (!settings || initialized.current) return;
+    initialized.current = true;
     setDraft({
       monitoringEnabled: settings.monitoringEnabled,
       checkIntervalSeconds: String(settings.checkIntervalMs / 1_000),
@@ -648,16 +675,27 @@ function SettingsDrawer({
                 setDraft((item) => ({ ...item, cooldownMinutes: value }))
               }
             />
-            <div className="setting-row readonly">
-              <span>自动切换（Step 13 开放）</span>
+            <label className="toggle-row emphasized">
+              <span>自动切换入口 IP</span>
               <input
                 type="checkbox"
                 aria-label="自动切换"
                 checked={settings.autoSwitchEnabled}
-                disabled
-                readOnly
+                disabled={
+                  saving ||
+                  autoSaving ||
+                  offline ||
+                  (!settings.autoSwitchEnabled &&
+                    (busy || !snapshot?.lock.locked || !snapshot.profile))
+                }
+                onChange={(event) => onAutoChange(event.target.checked)}
               />
-            </div>
+            </label>
+            <p className="setting-hint">
+              {!snapshot?.lock.locked
+                ? '请先诊断并确认锁定当前订阅。'
+                : '仅在互联网正常、入口达到失败阈值且冷却结束后执行。'}
+            </p>
             <div className="setting-row readonly">
               <span>绑定订阅 UID</span>
               <strong>{settings.autoSwitchProfileUid ?? '未绑定'}</strong>
@@ -761,7 +799,7 @@ function TaskPanel({
   const needsAttention =
     task?.recoveryStatus === 'recovery_failed' ||
     (task?.recoveryStatus === 'unknown' &&
-      ['apply', 'reset', 'rollback'].includes(task.type));
+      ['apply', 'reset', 'rollback', 'auto_switch'].includes(task.type));
   const title = !task
     ? '正在读取任务'
     : task.status === 'succeeded'
@@ -851,7 +889,7 @@ function TaskPanel({
 }
 
 interface Confirmation {
-  action: Extract<ManualAction, 'apply' | 'reset' | 'rollback'>;
+  action: Extract<ManualAction, 'apply' | 'reset' | 'rollback'> | 'auto';
   ip?: string;
 }
 
@@ -859,12 +897,14 @@ function ConfirmDialog({
   confirmation,
   snapshot,
   diagnosis,
+  settings,
   onCancel,
   onConfirm,
 }: {
   confirmation: Confirmation | null;
   snapshot: HealthSnapshot | null | undefined;
   diagnosis: StoredDiagnosis | null | undefined;
+  settings: Settings | undefined;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -880,7 +920,14 @@ function ConfirmDialog({
   }, [confirmation, onCancel]);
   if (!confirmation) return null;
   const content =
-    confirmation.action === 'apply' ? (
+    confirmation.action === 'auto' ? (
+      <>
+        将为订阅“{snapshot?.profile?.name ?? '未知'}”启用自动切换。入口连续失败{' '}
+        {settings?.entryFailureThreshold ?? '—'}{' '}
+        次、互联网正常且存在合格备选时， 后台会自动修改配置；每次处理后冷却{' '}
+        {Math.round((settings?.autoSwitchCooldownMs ?? 0) / 60_000)} 分钟。
+      </>
+    ) : confirmation.action === 'apply' ? (
       <>
         将为订阅“{diagnosis?.profile.name ?? snapshot?.profile?.name ?? '未知'}”
         的入口域名 {diagnosis?.domain ?? '未识别'}，把当前 IP{' '}
@@ -910,11 +957,13 @@ function ConfirmDialog({
       >
         <h2 id="confirm-title">
           确认
-          {confirmation.action === 'apply'
-            ? '应用候选'
-            : confirmation.action === 'reset'
-              ? '解除锁定'
-              : '回滚变更'}
+          {confirmation.action === 'auto'
+            ? '启用自动切换'
+            : confirmation.action === 'apply'
+              ? '应用候选'
+              : confirmation.action === 'reset'
+                ? '解除锁定'
+                : '回滚变更'}
         </h2>
         <p>{content}</p>
         <div className="dialog-actions">
@@ -926,7 +975,7 @@ function ConfirmDialog({
             className="button primary"
             onClick={onConfirm}
           >
-            确认执行
+            {confirmation.action === 'auto' ? '启用自动切换' : '确认执行'}
           </button>
         </div>
       </div>
@@ -1001,6 +1050,34 @@ export function Dashboard() {
       settingsButtonRef.current?.focus();
     },
   });
+  const autoSwitchMutation = useMutation({
+    mutationFn: (enabled: boolean) => {
+      const current = settings.data?.data.settings;
+      const profileUid = status.data?.data.snapshot?.profile?.uid ?? null;
+      if (!current) throw new Error('设置尚未载入');
+      const editable: SettingsUpdate = {
+        checkIntervalMs: current.checkIntervalMs,
+        requestTimeoutMs: current.requestTimeoutMs,
+        entryFailureThreshold: current.entryFailureThreshold,
+        autoSwitchCooldownMs: current.autoSwitchCooldownMs,
+        monitoringEnabled: current.monitoringEnabled,
+        autoSwitchEnabled: current.autoSwitchEnabled,
+        autoSwitchProfileUid: current.autoSwitchProfileUid,
+      };
+      return api.updateSettings({
+        ...editable,
+        autoSwitchEnabled: enabled,
+        autoSwitchProfileUid: enabled ? profileUid : null,
+      });
+    },
+    onSuccess: (response) => {
+      client.setQueryData(queryKeys.settings, response);
+      void client.invalidateQueries({
+        queryKey: queryKeys.monitoring,
+        exact: true,
+      });
+    },
+  });
 
   useEffect(() => {
     const unsubscribe = stream.subscribe(setStreamState);
@@ -1050,6 +1127,12 @@ export function Dashboard() {
     actionMutation.isPending ||
     trackedTask?.status === 'queued' ||
     trackedTask?.status === 'running';
+  useEffect(() => {
+    const activeTaskId = monitoring.data?.data.monitoring.activeTaskId;
+    if (!activeTaskId || activeTaskId === currentTaskId) return;
+    setCurrentTaskId(activeTaskId);
+    sessionStorage.setItem(ACTIVE_TASK_KEY, activeTaskId);
+  }, [currentTaskId, monitoring.data?.data.monitoring.activeTaskId]);
 
   const submitAction = (action: ManualAction, body?: object) => {
     if (taskBusy) return;
@@ -1073,6 +1156,11 @@ export function Dashboard() {
   };
   const confirmAction = () => {
     if (!confirmation) return;
+    if (confirmation.action === 'auto') {
+      autoSwitchMutation.mutate(true);
+      closeConfirmation();
+      return;
+    }
     submitAction(
       confirmation.action,
       confirmation.action === 'apply' ? { ip: confirmation.ip } : {},
@@ -1249,14 +1337,34 @@ export function Dashboard() {
         busy={taskBusy}
         saving={settingsMutation.isPending}
         saveError={
-          settingsMutation.error ? formatApiError(settingsMutation.error) : null
+          settingsMutation.error
+            ? formatApiError(settingsMutation.error)
+            : autoSwitchMutation.error
+              ? formatApiError(autoSwitchMutation.error)
+              : null
         }
         onSave={(value) => settingsMutation.mutate(value)}
+        snapshot={status.data?.data.snapshot}
+        offline={offline}
+        autoSaving={autoSwitchMutation.isPending}
+        onAutoChange={(enabled) => {
+          autoSwitchMutation.reset();
+          if (!enabled) {
+            autoSwitchMutation.mutate(false);
+            return;
+          }
+          actionTriggerRef.current =
+            document.activeElement instanceof HTMLElement
+              ? document.activeElement
+              : null;
+          setConfirmation({ action: 'auto' });
+        }}
       />
       <ConfirmDialog
         confirmation={confirmation}
         snapshot={status.data?.data.snapshot}
         diagnosis={candidates.data?.data.diagnosis}
+        settings={settings.data?.data.settings}
         onCancel={closeConfirmation}
         onConfirm={confirmAction}
       />

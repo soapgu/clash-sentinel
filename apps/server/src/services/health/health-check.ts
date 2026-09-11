@@ -24,7 +24,7 @@ export const HEALTH_TARGETS = {
 /** 健康编排器调用的 Legacy 只读和检测能力。 */
 export type HealthLegacyOperations = Pick<
   LegacyAdapter,
-  'getStatus' | 'healthCheck' | 'readLatestDiagnosis'
+  'getStatus' | 'healthCheck' | 'diagnose'
 >;
 
 /** 创建完整健康检测编排器所需的依赖。 */
@@ -52,6 +52,7 @@ export interface HealthCheckChanges {
   sitesUpdated: boolean;
   candidatesUpdated: boolean;
   eventAppended: boolean;
+  settingsUpdated: boolean;
 }
 
 /** 健康快照和仅供服务端通知层使用的执行摘要。 */
@@ -110,6 +111,7 @@ export class HealthCheckService {
       sitesUpdated: false,
       candidatesUpdated: false,
       eventAppended: false,
+      settingsUpdated: false,
     };
     const settings = this.options.store.getSettings();
     const directPromise = Promise.all(
@@ -161,9 +163,15 @@ export class HealthCheckService {
     const status = await this.readStatusSafely();
     const directSuccess = directResults.filter((item) => item.reachable).length;
     let snapshot = this.baseSnapshot(previous, status, directSuccess);
+    let identityChanged: 'profile' | 'content' | null =
+      previous?.profile && status && previous.profile.uid !== status.profile.uid
+        ? 'profile'
+        : null;
 
     if (directSuccess >= 2 && status?.lock.locked) {
-      const legacyHealth = await this.options.legacy.healthCheck();
+      const legacyHealth = await this.options.legacy.healthCheck(
+        settings.entryFailureThreshold,
+      );
       snapshot = {
         ...snapshot,
         status: legacyHealth.status,
@@ -172,22 +180,49 @@ export class HealthCheckService {
         consecutiveFailures: legacyHealth.consecutiveFailures,
         recommendedIp: legacyHealth.recommendedIp,
       };
+      identityChanged = legacyHealth.identityChanged ?? identityChanged;
+    }
+    if (identityChanged) {
+      if (this.options.store.clearDiagnosis()) changes.candidatesUpdated = true;
+      snapshot.consecutiveFailures = 0;
+      snapshot.recommendedIp = null;
+      if (identityChanged === 'profile') {
+        const currentSettings = this.options.store.getSettings();
+        if (
+          currentSettings.autoSwitchEnabled ||
+          currentSettings.autoSwitchProfileUid !== null
+        ) {
+          this.options.store.updateSettings({
+            autoSwitchEnabled: false,
+            autoSwitchProfileUid: null,
+          });
+          changes.settingsUpdated = true;
+        }
+      }
+      changes.eventAppended = this.appendIdentityEventSafely(
+        identityChanged,
+        snapshot,
+      );
     }
 
     snapshot.status = this.finalStatus(snapshot, status, proxyResults);
-    const saved = this.options.store.upsertHealthSnapshot(snapshot);
+    let saved = this.options.store.upsertHealthSnapshot(snapshot);
     changes.statusUpdated = true;
-    if (snapshot.status === 'entry_down') {
-      this.options.store.replaceDiagnosis(
-        await this.options.legacy.readLatestDiagnosis(),
+    if (snapshot.status === 'entry_down' && previous?.status !== 'entry_down') {
+      const diagnosis = this.options.store.replaceDiagnosis(
+        await this.options.legacy.diagnose(),
       );
       changes.candidatesUpdated = true;
+      snapshot.recommendedIp = this.selectCandidate(
+        diagnosis.candidates,
+        snapshot.lock.locked ? snapshot.lock.ip : null,
+      );
+      saved = this.options.store.upsertHealthSnapshot(snapshot);
     }
     if (source === 'scheduled' && previous?.status !== saved.status) {
-      changes.eventAppended = this.appendTransitionEventSafely(
-        previous?.status ?? null,
-        saved,
-      );
+      changes.eventAppended =
+        this.appendTransitionEventSafely(previous?.status ?? null, saved) ||
+        changes.eventAppended;
       this.logger.info('health:check', 'status changed', {
         runId,
         previousStatus: previous?.status ?? null,
@@ -200,6 +235,7 @@ export class HealthCheckService {
     if (changes.sitesUpdated) changedResources.push('sites');
     if (changes.candidatesUpdated) changedResources.push('candidates');
     if (changes.eventAppended) changedResources.push('events');
+    if (changes.settingsUpdated) changedResources.push('settings');
     this.logger.info('health:check', 'completed', {
       source,
       runId,
@@ -212,6 +248,47 @@ export class HealthCheckService {
       changedResources,
     });
     return { snapshot: saved, changes };
+  }
+
+  /** 从合格候选中稳定选择一个不同于当前锁定地址的最快 IP。 */
+  private selectCandidate(
+    candidates: Array<{ ip: string; eligible: boolean; averageMs: number }>,
+    currentIp: string | null,
+  ) {
+    return (
+      candidates
+        .filter((item) => item.eligible && item.ip !== currentIp)
+        .sort(
+          (left, right) =>
+            left.averageMs - right.averageMs || left.ip.localeCompare(right.ip),
+        )[0]?.ip ?? null
+    );
+  }
+
+  /** 记录订阅切换或同订阅内容更新，失败不影响健康快照。 */
+  private appendIdentityEventSafely(
+    change: 'profile' | 'content',
+    snapshot: HealthSnapshot,
+  ) {
+    try {
+      this.options.store.appendEvent({
+        type: change === 'profile' ? 'profile_changed' : 'subscription_updated',
+        severity: 'warning',
+        retention: 'ordinary',
+        summary:
+          change === 'profile'
+            ? '当前订阅已切换，自动切换已关闭'
+            : '当前订阅内容已更新，旧诊断已失效',
+        profileUid: snapshot.profile?.uid ?? null,
+      });
+      return true;
+    } catch (error) {
+      this.logger.warn('health:check', 'identity event append failed', {
+        change,
+        error,
+      });
+      return false;
+    }
   }
 
   /** 状态命令失败时保留站点结果并把身份降级为未知。 */

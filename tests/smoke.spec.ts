@@ -298,6 +298,103 @@ test('配置任务恢复失败在刷新后持续提示人工处理', async ({ pa
   await expect(page.getByRole('heading', { name: '需人工处理' })).toBeVisible();
 });
 
+test('自动切换独立确认且不会夹带未保存的普通设置', async ({ page }) => {
+  await mockDashboardSnapshots(page);
+  const updates: Array<Record<string, unknown>> = [];
+  await page.route('**/api/settings', async (route) => {
+    if (route.request().method() !== 'PUT') {
+      await route.fallback();
+      return;
+    }
+    const value = route.request().postDataJSON() as Record<string, unknown>;
+    updates.push(value);
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        data: {
+          settings: { ...value, updatedAt: '2026-09-11T04:00:00.000Z' },
+        },
+      }),
+    });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '打开设置' }).click();
+  await page.getByLabel('检测间隔').fill('120');
+  await page.getByRole('checkbox', { name: '自动切换' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('演示订阅 A');
+  await expect(dialog).toContainText('连续失败 3 次');
+  await dialog.getByRole('button', { name: '启用自动切换' }).click();
+  await expect(page.getByLabel('检测间隔')).toHaveValue('120');
+  expect(updates[0]).toMatchObject({
+    checkIntervalMs: 60_000,
+    autoSwitchEnabled: true,
+    autoSwitchProfileUid: 'demo-profile-a',
+  });
+  const autoSwitch = page.getByRole('checkbox', { name: '自动切换' });
+  await expect(autoSwitch).toBeChecked();
+  await expect(autoSwitch).toBeEnabled();
+  await autoSwitch.click();
+  expect(updates[1]).toMatchObject({
+    autoSwitchEnabled: false,
+    autoSwitchProfileUid: null,
+  });
+});
+
+test('监测快照中的自动任务可在新页面恢复跟踪', async ({ page }) => {
+  const taskId = '44444444-4444-4444-8444-444444444444';
+  const monitoring = {
+    ok: true,
+    data: {
+      monitoring: {
+        enabled: true,
+        state: 'running',
+        lastStartedAt: new Date().toISOString(),
+        lastCompletedAt: null,
+        nextRunAt: null,
+        activeTaskId: taskId,
+      },
+    },
+  };
+  await mockDashboardSnapshots(page, { monitoring });
+  await page.route(`**/api/tasks/${taskId}`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        data: {
+          task: {
+            id: taskId,
+            type: 'auto_switch',
+            status: 'running',
+            createdAt: '2026-09-11T04:00:00.000Z',
+            startedAt: '2026-09-11T04:00:01.000Z',
+            finishedAt: null,
+            input: { trigger: 'scheduled' },
+            result: null,
+            errorCode: null,
+            errorMessage: null,
+            recoveryStatus: null,
+          },
+        },
+      }),
+    }),
+  );
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: '任务执行中' })).toBeVisible();
+  await expect(
+    page.getByRole('definition').filter({ hasText: '自动切换' }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(() =>
+      sessionStorage.getItem('clash-sentinel.active-task-id'),
+    ),
+  ).toBe(taskId);
+});
+
 test('SSE 断线后进入低频同步并在重连后全量校准', async ({ page }) => {
   let rejectStream = true;
   await page.route('**/api/stream', async (route) => {

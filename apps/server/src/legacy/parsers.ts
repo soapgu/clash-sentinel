@@ -212,6 +212,9 @@ export function parseMonitorState(content: string): HealthCheckResult {
       'consecutive_failures',
     ),
     recommendedIp: nullIfEmptyOrDash(values.get('recommended_ip')),
+    profileUid: nullIfEmptyOrDash(values.get('profile_uid')),
+    rawFingerprint: nullIfEmptyOrDash(values.get('raw_fingerprint')),
+    identityChanged: nullIfEmptyOrDash(values.get('identity_changed')),
   });
   if (!result.success)
     throw new LegacyParseError(

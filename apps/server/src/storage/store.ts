@@ -236,7 +236,27 @@ export class SqliteStore {
       this.database.pragma('synchronous = NORMAL');
       runMigrations(this.database);
       this.ensureDefaultSettings();
+      const interruptedAutoSwitch = (
+        this.database
+          .prepare(
+            "SELECT id FROM tasks WHERE type = 'auto_switch' AND status IN ('queued', 'running')",
+          )
+          .all() as Array<{ id: string }>
+      ).map((row) => row.id);
       const recoveredTasks = this.recoverInterruptedTasks();
+      if (interruptedAutoSwitch.length > 0) {
+        this.updateSettings({
+          autoSwitchEnabled: false,
+          autoSwitchProfileUid: null,
+        });
+        this.appendEvent({
+          type: 'auto_switch_interrupted',
+          severity: 'critical',
+          retention: 'critical',
+          summary: '自动切换被服务中断，已关闭自动切换',
+          details: { taskIds: interruptedAutoSwitch },
+        });
+      }
       this.logger.info('storage:sqlite', 'database opened', {
         inMemory: path === ':memory:',
         recoveredTasks,
@@ -499,6 +519,15 @@ export class SqliteStore {
     });
   }
 
+  /** 清除已失效的最近诊断及其级联候选。 */
+  clearDiagnosis(): boolean {
+    return (
+      this.database
+        .prepare('DELETE FROM diagnosis_snapshot WHERE singleton_id = 1')
+        .run().changes > 0
+    );
+  }
+
   /**
    * 在单一事务中替换最近诊断及全部候选。
    *
@@ -678,7 +707,7 @@ export class SqliteStore {
   }
 
   /**
-   * 将服务重启前遗留的 running 任务安全终止为 interrupted。
+   * 将服务重启前遗留的 queued/running 任务安全终止为 interrupted。
    *
    * @returns 被恢复处理的任务数量。
    */
@@ -692,7 +721,7 @@ export class SqliteStore {
             WHEN type IN ('apply', 'reset', 'rollback', 'auto_switch') THEN 'unknown'
             ELSE NULL
           END
-        WHERE status = 'running'
+        WHERE status IN ('queued', 'running')
       `,
       )
       .run(Date.now());

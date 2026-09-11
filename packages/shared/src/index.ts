@@ -115,6 +115,12 @@ export const healthCheckResultSchema = z.object({
   currentIp: ipv4Schema,
   consecutiveFailures: z.number().int().nonnegative(),
   recommendedIp: ipv4Schema.nullable(),
+  profileUid: z.string().min(1).nullable(),
+  rawFingerprint: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .nullable(),
+  identityChanged: z.enum(['profile', 'content']).nullable(),
 });
 /** 一次互联网基线和锁定入口健康检查的结果。 */
 export type HealthCheckResult = z.infer<typeof healthCheckResultSchema>;
@@ -529,6 +535,7 @@ export const monitoringSnapshotSchema = z
     lastStartedAt: z.string().datetime().nullable(),
     lastCompletedAt: z.string().datetime().nullable(),
     nextRunAt: z.string().datetime().nullable(),
+    activeTaskId: z.string().uuid().nullable().default(null),
   })
   .superRefine((value, context) => {
     if (value.state === 'waiting' && !value.enabled) {
