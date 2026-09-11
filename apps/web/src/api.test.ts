@@ -49,6 +49,9 @@ describe('统一 API 请求层', () => {
           error: {
             code: 'REQUEST_TIMEOUT',
             message: '请求处理超时，请稍后重试',
+            details: {
+              activeTaskId: '11111111-1111-4111-8111-111111111111',
+            },
           },
           requestId,
         },
@@ -65,6 +68,30 @@ describe('统一 API 请求层', () => {
       status: 504,
       code: 'REQUEST_TIMEOUT',
       requestId,
+      details: {
+        activeTaskId: '11111111-1111-4111-8111-111111111111',
+      },
+    });
+  });
+
+  test('写请求统一编码 JSON 且仍使用普通请求超时', async () => {
+    const fetcher = vi.fn(async () => response(okBody));
+    const signal = new AbortController().signal;
+    await requestJson('/api/actions/health-check', healthResponseSchema, {
+      timeoutMs: 12_000,
+      method: 'POST',
+      body: {},
+      fetcher,
+      timeoutSignal: () => signal,
+    });
+    expect(fetcher).toHaveBeenCalledWith('/api/actions/health-check', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+      signal,
     });
   });
 

@@ -202,7 +202,8 @@
         "input": { "ip": "198.51.100.18" },
         "result": null,
         "errorCode": null,
-        "errorMessage": null
+        "errorMessage": null,
+        "recoveryStatus": null
       }
     }
   }

@@ -41,7 +41,7 @@ export class DashboardStream {
   private reconnectAttempt = 0;
   private stopped = true;
   private state: StreamState = 'connecting';
-  private pendingResources = new Set<StreamBaseResource>();
+  private pendingResources = new Set<string>();
   private flushQueued = false;
   private readonly listeners = new Set<(state: StreamState) => void>();
   private readonly createEventSource: (url: string) => EventSourceLike;
@@ -144,12 +144,7 @@ export class DashboardStream {
         );
         return;
       }
-      this.queueResources(
-        parsed.data.resources.filter(
-          (resource): resource is StreamBaseResource =>
-            !resource.startsWith('task:'),
-        ),
-      );
+      this.queueResources(parsed.data.resources);
     });
     source.onerror = () => {
       if (this.source !== source || this.stopped) return;
@@ -170,7 +165,7 @@ export class DashboardStream {
     }
   }
 
-  private queueResources(resources: readonly StreamBaseResource[]) {
+  private queueResources(resources: readonly string[]) {
     for (const resource of resources) this.pendingResources.add(resource);
     if (this.flushQueued || this.pendingResources.size === 0) return;
     this.flushQueued = true;
@@ -178,11 +173,13 @@ export class DashboardStream {
       this.flushQueued = false;
       const pending = [...this.pendingResources];
       this.pendingResources.clear();
-      for (const resource of pending)
-        void this.client.invalidateQueries({
-          queryKey: streamQueryKeys[resource],
-          exact: true,
-        });
+      for (const resource of pending) {
+        const queryKey = resource.startsWith('task:')
+          ? ['task', resource.slice(5)]
+          : streamQueryKeys[resource as StreamBaseResource];
+        if (queryKey)
+          void this.client.invalidateQueries({ queryKey, exact: true });
+      }
     });
   }
 

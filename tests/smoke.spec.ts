@@ -130,17 +130,68 @@ test('单个代理站点失败不会覆盖其他站点的独立状态', async ({
   ).toBeVisible();
 });
 
-test('刷新和所有预留操作保持只读', async ({ page }) => {
+test('刷新、手动任务和监测设置形成操作闭环', async ({ page }) => {
   const writes: string[] = [];
+  let savedSettings: Record<string, unknown> | null = null;
+  const taskId = '11111111-1111-4111-8111-111111111111';
+  await mockDashboardSnapshots(page);
+  await page.route('**/api/actions/**', (route) =>
+    route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, data: { taskId, status: 'queued' } }),
+    }),
+  );
+  await page.route(`**/api/tasks/${taskId}`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        data: {
+          task: {
+            id: taskId,
+            type: 'health_check',
+            status: 'succeeded',
+            createdAt: '2026-09-11T04:00:00.000Z',
+            startedAt: '2026-09-11T04:00:01.000Z',
+            finishedAt: '2026-09-11T04:00:02.000Z',
+            input: null,
+            result: { status: 'healthy' },
+            errorCode: null,
+            errorMessage: null,
+            recoveryStatus: null,
+          },
+        },
+      }),
+    }),
+  );
+  await page.route('**/api/settings', async (route) => {
+    if (route.request().method() !== 'PUT') {
+      await route.fallback();
+      return;
+    }
+    const value = route.request().postDataJSON() as Record<string, unknown>;
+    savedSettings = value;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        data: { settings: { ...value, updatedAt: '2026-09-11T04:00:00.000Z' } },
+      }),
+    });
+  });
   page.on('request', (request) => {
     if (request.method() !== 'GET')
       writes.push(`${request.method()} ${request.url()}`);
   });
   await page.goto('/');
-  await expect(page.getByRole('button', { name: '立即检测' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: '重新诊断' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: '解除锁定' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: '回滚变更' })).toBeDisabled();
+  await page.getByRole('button', { name: '立即检测' }).click();
+  await expect(page.getByRole('heading', { name: '任务已完成' })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('heading', { name: '任务已完成' })).toBeVisible();
+  await page.getByRole('button', { name: '关闭任务状态' }).click();
   const refreshed = page.waitForResponse((response) =>
     response.url().endsWith('/api/status'),
   );
@@ -149,18 +200,102 @@ test('刷新和所有预留操作保持只读', async ({ page }) => {
 
   await page.getByRole('button', { name: '打开设置' }).click();
   await expect(page.getByRole('heading', { name: '监测设置' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '保存设置' })).toBeDisabled();
-  await page
-    .getByRole('button', { name: '关闭设置', exact: true })
-    .last()
-    .click();
+  await page.getByLabel('检测间隔').fill('0');
+  await page.getByRole('button', { name: '保存设置' }).click();
+  await expect(page.getByRole('alert')).toContainText(
+    '检测间隔必须在 1～86400 秒之间',
+  );
+  await page.getByLabel('检测间隔').fill('120');
+  await page.getByRole('button', { name: '保存设置' }).click();
+  await expect(page.locator('.settings-drawer')).toBeHidden();
   const settingsButton = page.getByRole('button', { name: '打开设置' });
   await settingsButton.focus();
   await page.keyboard.press('Enter');
   await expect(page.locator('.settings-drawer')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.locator('.settings-drawer')).toBeHidden();
-  expect(writes).toEqual([]);
+  expect(
+    writes.some(
+      (item) =>
+        item.includes('POST') && item.includes('/api/actions/health-check'),
+    ),
+  ).toBe(true);
+  expect(
+    writes.some(
+      (item) => item.includes('PUT') && item.includes('/api/settings'),
+    ),
+  ).toBe(true);
+  expect(savedSettings).toMatchObject({
+    checkIntervalMs: 120_000,
+    requestTimeoutMs: 5_000,
+    entryFailureThreshold: 3,
+    autoSwitchCooldownMs: 300_000,
+    autoSwitchEnabled: false,
+    autoSwitchProfileUid: null,
+  });
+});
+
+test('高风险操作展示真实上下文且 Escape 返回触发按钮焦点', async ({ page }) => {
+  const candidateFixture = structuredClone(fixtures.candidates) as {
+    data: { diagnosis: { savedAt: string } };
+  };
+  candidateFixture.data.diagnosis.savedAt = new Date().toISOString();
+  await mockDashboardSnapshots(page, { candidates: candidateFixture });
+  await page.goto('/');
+  const candidate = page.locator('article').filter({
+    has: page.getByText('198.51.100.18', { exact: true }),
+  });
+  const apply = candidate.getByRole('button', { name: '应用' });
+  await apply.click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('演示订阅 A');
+  await expect(dialog).toContainText('entry.example.com');
+  await expect(dialog).toContainText('192.0.2.42');
+  await expect(dialog).toContainText('198.51.100.18');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(apply).toBeFocused();
+
+  await page.getByRole('button', { name: '回滚变更' }).click();
+  await expect(page.getByRole('dialog')).toContainText('复核最近备份');
+});
+
+test('配置任务恢复失败在刷新后持续提示人工处理', async ({ page }) => {
+  const taskId = '33333333-3333-4333-8333-333333333333';
+  await mockDashboardSnapshots(page);
+  await page.addInitScript(
+    ({ key, value }) => sessionStorage.setItem(key, value),
+    { key: 'clash-sentinel.active-task-id', value: taskId },
+  );
+  await page.route(`**/api/tasks/${taskId}`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        data: {
+          task: {
+            id: taskId,
+            type: 'apply',
+            status: 'failed',
+            createdAt: '2026-09-11T04:00:00.000Z',
+            startedAt: '2026-09-11T04:00:01.000Z',
+            finishedAt: '2026-09-11T04:00:02.000Z',
+            input: { ip: '198.51.100.18' },
+            result: null,
+            errorCode: 'APPLY_FAILED',
+            errorMessage: '应用失败',
+            recoveryStatus: 'recovery_failed',
+          },
+        },
+      }),
+    }),
+  );
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: '需人工处理' })).toBeVisible();
+  await expect(page.getByText('无法确认配置已安全恢复')).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('heading', { name: '需人工处理' })).toBeVisible();
 });
 
 test('SSE 断线后进入低频同步并在重连后全量校准', async ({ page }) => {

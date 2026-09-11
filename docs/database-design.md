@@ -408,6 +408,7 @@ SQLite：执行 NOT NULL、CHECK、主键、唯一键和外键约束
 | `result_json` | `TEXT` | 是 | 脱敏且不超过 32 KiB | 任务结果摘要 |
 | `error_code` | `TEXT` | 是 | 存储方法限制为最多 100 字符 | 稳定错误码 |
 | `error_message` | `TEXT` | 是 | 脱敏且最多 2000 字符 | 面向调用方的错误说明 |
+| `recovery_status` | `TEXT` | 是 | `not_required/recovered/recovery_failed/unknown` | 配置动作失败后的恢复结论 |
 
 任务类型为 `health_check`、`diagnose`、`apply`、`reset`、`rollback`、`auto_switch`；状态为
 `queued`、`running`、`succeeded`、`failed`、`interrupted`。索引
@@ -497,6 +498,8 @@ stateDiagram-v2
 每次打开数据库时，`recoverInterruptedTasks()` 把遗留 `running` 任务更新为 `interrupted`，写入
 结束时间、`SERVICE_RESTARTED` 错误码和“任务未自动重放”说明。成功、失败等已有终态保持不变，
 配置修改任务绝不因服务重启而自动执行第二次。
+配置类任务在重启恢复时写入 `recovery_status=unknown`，其他任务保持 `null`。正常失败由
+Legacy 适配层根据修改边界、文件还原和 Mihomo 重载的真实结果写入恢复结论，前端不解析错误文案。
 
 ### 6.6 事件追加
 

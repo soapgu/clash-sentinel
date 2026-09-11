@@ -8,6 +8,7 @@ import {
   type LegacyErrorCode,
   type LegacyStatus,
   type OperationResult,
+  type TaskRecoveryStatus,
 } from '@clash-sentinel/shared';
 import {
   LegacyParseError,
@@ -69,6 +70,7 @@ export class LegacyAdapterError extends Error {
     public readonly code: LegacyErrorCode,
     message: string,
     public readonly exitCode: number | null = null,
+    public readonly recoveryStatus: TaskRecoveryStatus | null = null,
   ) {
     super(message);
     this.name = 'LegacyAdapterError';
@@ -318,7 +320,12 @@ export class LegacyAdapter {
             errorCode: 'TIMEOUT',
           });
           rejectPromise(
-            new LegacyAdapterError('TIMEOUT', `${command} 执行超时`, code),
+            new LegacyAdapterError(
+              'TIMEOUT',
+              `${command} 执行超时`,
+              code,
+              this.isCritical(command) ? 'unknown' : null,
+            ),
           );
           return;
         }
@@ -328,13 +335,23 @@ export class LegacyAdapter {
             errorCode: 'PROCESS_EXITED',
           });
           rejectPromise(
-            new LegacyAdapterError('PROCESS_EXITED', `${command} 无法启动`),
+            new LegacyAdapterError(
+              'PROCESS_EXITED',
+              `${command} 无法启动`,
+              null,
+              this.isCritical(command) ? 'unknown' : null,
+            ),
           );
           return;
         }
         if (code !== 0) {
           const safeOutput = this.sanitize(`${stderr}\n${stdout}`).trim();
           const errorCode = this.mapErrorCode(command, safeOutput);
+          const recoveryStatus = this.recoveryStatus(
+            command,
+            errorCode,
+            safeOutput,
+          );
           this.logger.error('legacy:adapter', 'command failed', {
             ...outputMetadata,
             errorCode,
@@ -344,6 +361,7 @@ export class LegacyAdapter {
               errorCode,
               this.publicErrorMessage(command, safeOutput),
               code,
+              recoveryStatus,
             ),
           );
           return;
@@ -430,9 +448,14 @@ export class LegacyAdapter {
       return 'INVALID_CANDIDATE';
     if (/控制接口不可连接/.test(output)) return 'CONTROLLER_UNAVAILABLE';
     if (/尚未锁定入口 IP/.test(output)) return 'NOT_LOCKED';
-    if (/没有可回滚/.test(output)) return 'NO_BACKUP';
+    if (/没有可回滚|备份清单不存在/.test(output)) return 'NO_BACKUP';
     if (/没有候选|推荐 IP：无/.test(output)) return 'NO_CANDIDATE';
-    if (/自定义逻辑|最近诊断已跳过/.test(output)) return 'UNSUPPORTED_CONFIG';
+    if (
+      /自定义逻辑|最近诊断已跳过|脚本覆写不存在|受管脚本内容不完整|运行配置中没有可替换/.test(
+        output,
+      )
+    )
+      return 'UNSUPPORTED_CONFIG';
     if (command === 'apply' && /应用失败/.test(output)) return 'APPLY_FAILED';
     if (command === 'reset' && /恢复失败/.test(output)) return 'RESET_FAILED';
     if (command === 'rollback' && /恢复失败|重载失败/.test(output))
@@ -450,8 +473,44 @@ export class LegacyAdapter {
   private publicErrorMessage(command: LegacyCommand, output: string) {
     const detail = output
       .split(/\r?\n/)
-      .map((line) => line.trim())
+      .map((line) =>
+        line
+          .replace(/RECOVERY_STATUS=(?:recovered|recovery_failed)\s*/g, '')
+          .trim(),
+      )
       .find(Boolean);
     return detail ? `${command} 失败：${detail}` : `${command} 异常退出`;
+  }
+
+  /** 配置动作失败时将脚本恢复标记转换为稳定任务契约。 */
+  private recoveryStatus(
+    command: LegacyCommand,
+    errorCode: LegacyErrorCode,
+    output: string,
+  ): TaskRecoveryStatus | null {
+    if (!this.isCritical(command)) return null;
+    const marker = output.match(
+      /RECOVERY_STATUS=(recovered|recovery_failed)\b/,
+    )?.[1];
+    if (marker === 'recovered' || marker === 'recovery_failed') return marker;
+    if (
+      [
+        'NO_CANDIDATE',
+        'REPORT_EXPIRED',
+        'PROFILE_CHANGED',
+        'SUBSCRIPTION_UPDATED',
+        'INVALID_CANDIDATE',
+        'CONTROLLER_UNAVAILABLE',
+        'NOT_LOCKED',
+        'NO_BACKUP',
+        'UNSUPPORTED_CONFIG',
+      ].includes(errorCode)
+    )
+      return 'not_required';
+    return 'unknown';
+  }
+
+  private isCritical(command: LegacyCommand) {
+    return command === 'apply' || command === 'reset' || command === 'rollback';
   }
 }

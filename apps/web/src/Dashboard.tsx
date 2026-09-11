@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   EventRecord,
   HealthSnapshot,
@@ -9,10 +9,19 @@ import type {
   SiteSnapshotView,
   SiteTarget,
   StoredDiagnosis,
+  StoredTask,
+  SettingsUpdate,
 } from '@clash-sentinel/shared';
-import { ApiClientError } from './api.js';
+import { settingsUpdateSchema } from '@clash-sentinel/shared';
+import { api, ApiClientError, type ManualAction } from './api.js';
 import { isDiagnosisFresh } from './freshness.js';
-import { dashboardQueries, refreshDashboard } from './queries.js';
+import {
+  dashboardQueries,
+  queryKeys,
+  refreshDashboard,
+  taskPollingInterval,
+  taskQuery,
+} from './queries.js';
 import { DashboardStream, type StreamState } from './stream.js';
 import baiduLogo from '../../../docs/design/high-fidelity/assets/baidu-official.png';
 import githubLogo from '../../../docs/design/high-fidelity/assets/github.svg';
@@ -117,22 +126,21 @@ function StreamStatus({
   );
 }
 
-function DisabledAction({
-  children,
-  className = 'button secondary',
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <button
-      className={className}
-      disabled
-      title="将在 Step 11 操作功能完成后开放"
-    >
-      {children}
-    </button>
-  );
+const ACTIVE_TASK_KEY = 'clash-sentinel.active-task-id';
+
+function settingsValidationMessage(path: PropertyKey | undefined) {
+  const messages: Record<string, string> = {
+    checkIntervalMs: '检测间隔必须在 1～86400 秒之间',
+    requestTimeoutMs: '请求超时必须在 0.1～60 秒之间',
+    entryFailureThreshold: '失败阈值必须是 1～100 的整数',
+    autoSwitchCooldownMs: '冷却时间必须在 0～1440 分钟之间',
+  };
+  return messages[String(path)] ?? '设置格式无效';
+}
+
+function formatApiError(error: unknown) {
+  if (!(error instanceof ApiClientError)) return '操作失败，请稍后重试。';
+  return `${error.message}${error.requestId ? ` · 请求 ID ${error.requestId}` : ''}`;
 }
 
 function MonitoringStrip({
@@ -194,10 +202,14 @@ function EntryCard({
   snapshot,
   settings,
   offline,
+  busy,
+  onAction,
 }: {
   snapshot: HealthSnapshot | null | undefined;
   settings?: Settings;
   offline: boolean;
+  busy: boolean;
+  onAction: (action: ManualAction) => void;
 }) {
   const profileName = snapshot?.profile?.name ?? '尚未识别订阅';
   const healthTone = offline ? 'neutral' : toneForHealth(snapshot?.status);
@@ -250,12 +262,36 @@ function EntryCard({
           </div>
         </div>
       </div>
-      <div className="entry-actions" aria-label="操作功能尚未开放">
-        <DisabledAction className="button primary">立即检测</DisabledAction>
-        <DisabledAction>重新诊断</DisabledAction>
-        <DisabledAction className="button ghost">解除锁定</DisabledAction>
-        <DisabledAction className="button ghost">回滚变更</DisabledAction>
-        <small>操作功能将在 Step 11 开放</small>
+      <div className="entry-actions" aria-label="手动操作">
+        <button
+          className="button primary"
+          disabled={busy || offline}
+          onClick={() => onAction('health-check')}
+        >
+          立即检测
+        </button>
+        <button
+          className="button secondary"
+          disabled={busy || offline}
+          onClick={() => onAction('diagnose')}
+        >
+          重新诊断
+        </button>
+        <button
+          className="button ghost"
+          disabled={busy || offline || !snapshot?.lock.locked}
+          onClick={() => onAction('reset')}
+        >
+          解除锁定
+        </button>
+        <button
+          className="button ghost"
+          disabled={busy || offline}
+          onClick={() => onAction('rollback')}
+        >
+          回滚变更
+        </button>
+        <small>{busy ? '已有任务正在执行' : '高风险操作需要确认'}</small>
       </div>
     </section>
   );
@@ -322,10 +358,16 @@ function CandidatePanel({
   diagnosis,
   now,
   offline,
+  currentIp,
+  busy,
+  onApply,
 }: {
   diagnosis: StoredDiagnosis | null | undefined;
   now: number;
   offline: boolean;
+  currentIp: string | null;
+  busy: boolean;
+  onApply: (ip: string) => void;
 }) {
   const fresh = isDiagnosisFresh(diagnosis ?? null, now) && !offline;
   const expiresAt = diagnosis
@@ -368,32 +410,42 @@ function CandidatePanel({
         </div>
       ) : (
         <div className="candidate-list">
-          {diagnosis.candidates.map((candidate) => (
-            <article
-              className={`candidate ${candidate.ip === diagnosis.recommendedIp ? 'recommended' : ''}`}
-              key={candidate.ip}
-            >
-              <div>
-                <strong>{candidate.ip}</strong>
-                {candidate.ip === diagnosis.recommendedIp ? (
-                  <span className="recommend-label">推荐</span>
-                ) : null}
-                <span>{candidate.sources.join(' · ') || '来源未知'}</span>
-              </div>
-              <div className="candidate-stats">
-                <span>
-                  成功率 <strong>{candidate.successRate}%</strong>
-                </span>
-                <span>
-                  平均 <strong>{Math.round(candidate.averageMs)} ms</strong>
-                </span>
-                <span>
-                  {candidate.success} / {candidate.total}
-                </span>
-              </div>
-              <DisabledAction className="button compact">应用</DisabledAction>
-            </article>
-          ))}
+          {diagnosis.candidates.map((candidate) => {
+            const applicable =
+              fresh && candidate.eligible && candidate.ip !== currentIp;
+            return (
+              <article
+                className={`candidate ${candidate.ip === diagnosis.recommendedIp ? 'recommended' : ''}`}
+                key={candidate.ip}
+              >
+                <div>
+                  <strong>{candidate.ip}</strong>
+                  {candidate.ip === diagnosis.recommendedIp ? (
+                    <span className="recommend-label">推荐</span>
+                  ) : null}
+                  <span>{candidate.sources.join(' · ') || '来源未知'}</span>
+                </div>
+                <div className="candidate-stats">
+                  <span>
+                    成功率 <strong>{candidate.successRate}%</strong>
+                  </span>
+                  <span>
+                    平均 <strong>{Math.round(candidate.averageMs)} ms</strong>
+                  </span>
+                  <span>
+                    {candidate.success} / {candidate.total}
+                  </span>
+                </div>
+                <button
+                  className="button compact"
+                  disabled={!applicable || busy || offline}
+                  onClick={() => onApply(candidate.ip)}
+                >
+                  {candidate.ip === currentIp ? '当前 IP' : '应用'}
+                </button>
+              </article>
+            );
+          })}
         </div>
       )}
     </section>
@@ -436,11 +488,38 @@ function SettingsDrawer({
   open,
   settings,
   onClose,
+  busy,
+  saving,
+  saveError,
+  onSave,
 }: {
   open: boolean;
   settings?: Settings;
   onClose: () => void;
+  busy: boolean;
+  saving: boolean;
+  saveError: string | null;
+  onSave: (settings: SettingsUpdate) => void;
 }) {
+  const [draft, setDraft] = useState({
+    monitoringEnabled: true,
+    checkIntervalSeconds: '60',
+    requestTimeoutSeconds: '5',
+    entryFailureThreshold: '3',
+    cooldownMinutes: '5',
+  });
+  const [validationError, setValidationError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open || !settings) return;
+    setDraft({
+      monitoringEnabled: settings.monitoringEnabled,
+      checkIntervalSeconds: String(settings.checkIntervalMs / 1_000),
+      requestTimeoutSeconds: String(settings.requestTimeoutMs / 1_000),
+      entryFailureThreshold: String(settings.entryFailureThreshold),
+      cooldownMinutes: String(settings.autoSwitchCooldownMs / 60_000),
+    });
+    setValidationError(null);
+  }, [open, settings]);
   useEffect(() => {
     if (!open) return;
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -449,6 +528,27 @@ function SettingsDrawer({
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [onClose, open]);
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!settings) return;
+    const parsed = settingsUpdateSchema.safeParse({
+      checkIntervalMs: Number(draft.checkIntervalSeconds) * 1_000,
+      requestTimeoutMs: Number(draft.requestTimeoutSeconds) * 1_000,
+      entryFailureThreshold: Number(draft.entryFailureThreshold),
+      autoSwitchCooldownMs: Number(draft.cooldownMinutes) * 60_000,
+      monitoringEnabled: draft.monitoringEnabled,
+      autoSwitchEnabled: settings.autoSwitchEnabled,
+      autoSwitchProfileUid: settings.autoSwitchProfileUid,
+    });
+    if (!parsed.success) {
+      setValidationError(
+        settingsValidationMessage(parsed.error.issues[0]?.path[0]),
+      );
+      return;
+    }
+    setValidationError(null);
+    onSave(parsed.data);
+  };
   return (
     <>
       {open ? (
@@ -465,7 +565,7 @@ function SettingsDrawer({
       >
         <header>
           <div>
-            <span className="eyebrow">只读策略</span>
+            <span className="eyebrow">监测策略</span>
             <h2 id="settings-title">监测设置</h2>
           </div>
           <button
@@ -482,56 +582,354 @@ function SettingsDrawer({
             <span>请稍后刷新重试。</span>
           </div>
         ) : (
-          <div className="settings-list">
-            <Setting
-              label="定时监测"
-              value={settings.monitoringEnabled ? '已开启' : '已关闭'}
-            />
-            <Setting
+          <form
+            className="settings-form"
+            id="settings-form"
+            onSubmit={submit}
+            noValidate
+          >
+            <label className="toggle-row">
+              <span>定时监测</span>
+              <input
+                type="checkbox"
+                checked={draft.monitoringEnabled}
+                disabled={busy || saving}
+                onChange={(event) =>
+                  setDraft((value) => ({
+                    ...value,
+                    monitoringEnabled: event.target.checked,
+                  }))
+                }
+              />
+            </label>
+            <NumberField
               label="检测间隔"
-              value={`${settings.checkIntervalMs / 1_000} 秒`}
+              unit="秒"
+              min="1"
+              max="86400"
+              value={draft.checkIntervalSeconds}
+              disabled={busy || saving}
+              onChange={(value) =>
+                setDraft((item) => ({ ...item, checkIntervalSeconds: value }))
+              }
             />
-            <Setting
+            <NumberField
               label="站点请求超时"
-              value={`${settings.requestTimeoutMs / 1_000} 秒`}
+              unit="秒"
+              min="0.1"
+              max="60"
+              step="0.1"
+              value={draft.requestTimeoutSeconds}
+              disabled={busy || saving}
+              onChange={(value) =>
+                setDraft((item) => ({ ...item, requestTimeoutSeconds: value }))
+              }
             />
-            <Setting
+            <NumberField
               label="入口失败阈值"
-              value={`${settings.entryFailureThreshold} 次`}
+              unit="次"
+              min="1"
+              max="100"
+              step="1"
+              value={draft.entryFailureThreshold}
+              disabled={busy || saving}
+              onChange={(value) =>
+                setDraft((item) => ({ ...item, entryFailureThreshold: value }))
+              }
             />
-            <Setting
+            <NumberField
               label="自动切换冷却"
-              value={`${settings.autoSwitchCooldownMs / 60_000} 分钟`}
+              unit="分钟"
+              min="0"
+              max="1440"
+              value={draft.cooldownMinutes}
+              disabled={busy || saving}
+              onChange={(value) =>
+                setDraft((item) => ({ ...item, cooldownMinutes: value }))
+              }
             />
-            <Setting
-              label="自动切换"
-              value={settings.autoSwitchEnabled ? '已开启' : '已关闭'}
-            />
-            <Setting
-              label="绑定订阅 UID"
-              value={settings.autoSwitchProfileUid ?? '未绑定'}
-            />
-          </div>
+            <div className="setting-row readonly">
+              <span>自动切换（Step 13 开放）</span>
+              <input
+                type="checkbox"
+                aria-label="自动切换"
+                checked={settings.autoSwitchEnabled}
+                disabled
+                readOnly
+              />
+            </div>
+            <div className="setting-row readonly">
+              <span>绑定订阅 UID</span>
+              <strong>{settings.autoSwitchProfileUid ?? '未绑定'}</strong>
+            </div>
+            {validationError || saveError ? (
+              <p className="form-error" role="alert">
+                {validationError ?? saveError}
+              </p>
+            ) : null}
+          </form>
         )}
         <div className="drawer-actions">
           <button className="button secondary" onClick={onClose}>
-            关闭
+            取消
           </button>
-          <DisabledAction className="button primary">保存设置</DisabledAction>
+          <button
+            className="button primary"
+            type="submit"
+            form="settings-form"
+            disabled={!settings || busy || saving}
+          >
+            {saving ? '保存中' : '保存设置'}
+          </button>
         </div>
-        <p className="readonly-note">
-          当前步骤仅展示配置，编辑功能将在 Step 11 开放。
-        </p>
       </aside>
     </>
   );
 }
 
-function Setting({ label, value }: { label: string; value: string }) {
+function NumberField({
+  label,
+  unit,
+  value,
+  onChange,
+  disabled,
+  min,
+  max,
+  step = '1',
+}: {
+  label: string;
+  unit: string;
+  value: string;
+  onChange: (value: string) => void;
+  disabled: boolean;
+  min: string;
+  max: string;
+  step?: string;
+}) {
   return (
-    <div className="setting-row">
+    <label className="setting-field">
       <span>{label}</span>
-      <strong>{value}</strong>
+      <span className="input-with-unit">
+        <input
+          type="number"
+          value={value}
+          min={min}
+          max={max}
+          step={step}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <small>{unit}</small>
+      </span>
+    </label>
+  );
+}
+
+const taskNames: Record<StoredTask['type'], string> = {
+  health_check: '立即检测',
+  diagnose: '重新诊断',
+  apply: '应用候选',
+  reset: '解除锁定',
+  rollback: '回滚变更',
+  auto_switch: '自动切换',
+};
+const taskStatusLabels: Record<StoredTask['status'], string> = {
+  queued: '等待执行',
+  running: '执行中',
+  succeeded: '成功',
+  failed: '失败',
+  interrupted: '已中断',
+};
+
+function TaskPanel({
+  task,
+  loading,
+  error,
+  onClose,
+}: {
+  task?: StoredTask;
+  loading: boolean;
+  error: unknown;
+  onClose: () => void;
+}) {
+  if (!task && !loading && !error) return null;
+  const terminal =
+    Boolean(error) ||
+    Boolean(
+      task && ['succeeded', 'failed', 'interrupted'].includes(task.status),
+    );
+  const needsAttention =
+    task?.recoveryStatus === 'recovery_failed' ||
+    (task?.recoveryStatus === 'unknown' &&
+      ['apply', 'reset', 'rollback'].includes(task.type));
+  const title = !task
+    ? '正在读取任务'
+    : task.status === 'succeeded'
+      ? '任务已完成'
+      : task.status === 'failed' && task.recoveryStatus === 'recovered'
+        ? '失败但已恢复'
+        : needsAttention
+          ? '需人工处理'
+          : task.status === 'interrupted'
+            ? '任务已中断'
+            : task.status === 'failed'
+              ? '任务失败'
+              : task.status === 'running'
+                ? '任务执行中'
+                : '任务等待执行';
+  const resultSummary = task?.result
+    ? [task.result.message, task.result.status, task.result.recommendedIp]
+        .find((value) => typeof value === 'string')
+        ?.toString()
+    : null;
+  return (
+    <section
+      className={`task-panel panel ${needsAttention ? 'danger' : task?.status === 'succeeded' ? 'success' : ''}`}
+      aria-live="polite"
+      aria-labelledby="task-panel-title"
+    >
+      <div className="section-heading">
+        <div>
+          <span className="eyebrow">后台任务</span>
+          <h2 id="task-panel-title">{title}</h2>
+        </div>
+        {terminal ? (
+          <button
+            className="icon-button"
+            aria-label="关闭任务状态"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        ) : null}
+      </div>
+      {error ? (
+        <p className="form-error">{formatApiError(error)}</p>
+      ) : task ? (
+        <dl className="task-details">
+          <div>
+            <dt>类型</dt>
+            <dd>{taskNames[task.type]}</dd>
+          </div>
+          <div>
+            <dt>状态</dt>
+            <dd>{taskStatusLabels[task.status]}</dd>
+          </div>
+          <div>
+            <dt>任务 ID</dt>
+            <dd>{task.id}</dd>
+          </div>
+          <div>
+            <dt>开始时间</dt>
+            <dd>{formatTime(task.startedAt)}</dd>
+          </div>
+          <div>
+            <dt>结束时间</dt>
+            <dd>{formatTime(task.finishedAt)}</dd>
+          </div>
+        </dl>
+      ) : (
+        <p>正在读取任务状态…</p>
+      )}
+      {task?.errorMessage ? (
+        <p className="task-message">{task.errorMessage}</p>
+      ) : null}
+      {resultSummary ? (
+        <p className="task-message">结果：{resultSummary}</p>
+      ) : null}
+      {task?.recoveryStatus === 'recovered' ? (
+        <p className="task-recovery">原文件与运行配置已恢复。</p>
+      ) : task?.recoveryStatus === 'not_required' ? (
+        <p className="task-recovery">修改前已拒绝，未改动配置。</p>
+      ) : needsAttention ? (
+        <p className="task-recovery">
+          无法确认配置已安全恢复，请检查 Clash 配置与运行状态。
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+interface Confirmation {
+  action: Extract<ManualAction, 'apply' | 'reset' | 'rollback'>;
+  ip?: string;
+}
+
+function ConfirmDialog({
+  confirmation,
+  snapshot,
+  diagnosis,
+  onCancel,
+  onConfirm,
+}: {
+  confirmation: Confirmation | null;
+  snapshot: HealthSnapshot | null | undefined;
+  diagnosis: StoredDiagnosis | null | undefined;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!confirmation) return;
+    confirmRef.current?.focus();
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onCancel();
+    };
+    window.addEventListener('keydown', escape);
+    return () => window.removeEventListener('keydown', escape);
+  }, [confirmation, onCancel]);
+  if (!confirmation) return null;
+  const content =
+    confirmation.action === 'apply' ? (
+      <>
+        将为订阅“{diagnosis?.profile.name ?? snapshot?.profile?.name ?? '未知'}”
+        的入口域名 {diagnosis?.domain ?? '未识别'}，把当前 IP{' '}
+        {snapshot?.lock.locked ? snapshot.lock.ip : '未锁定'} 切换为{' '}
+        {confirmation.ip}。
+      </>
+    ) : confirmation.action === 'reset' ? (
+      <>
+        将解除当前入口锁定
+        {snapshot?.lock.locked
+          ? ` ${snapshot.lock.domain} → ${snapshot.lock.ip}`
+          : ''}
+        ，并关闭自动切换。
+      </>
+    ) : (
+      <>
+        后台将复核最近备份、订阅和文件上下文；如条件不满足会安全拒绝，不预先假定恢复目标。
+      </>
+    );
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <div
+        className="confirm-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-title"
+      >
+        <h2 id="confirm-title">
+          确认
+          {confirmation.action === 'apply'
+            ? '应用候选'
+            : confirmation.action === 'reset'
+              ? '解除锁定'
+              : '回滚变更'}
+        </h2>
+        <p>{content}</p>
+        <div className="dialog-actions">
+          <button className="button secondary" onClick={onCancel}>
+            取消
+          </button>
+          <button
+            ref={confirmRef}
+            className="button primary"
+            onClick={onConfirm}
+          >
+            确认执行
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -543,7 +941,7 @@ function errorSummary(errors: unknown[]) {
   return `${error.message}${requestId}`;
 }
 
-/** Clash Sentinel 只读状态工作台。 */
+/** Clash Sentinel 状态与手动操作工作台。 */
 export function Dashboard() {
   const client = useQueryClient();
   const health = useQuery(dashboardQueries.health);
@@ -555,9 +953,54 @@ export function Dashboard() {
   const settings = useQuery(dashboardQueries.settings);
   const [streamState, setStreamState] = useState<StreamState>('connecting');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const [currentTaskId, setCurrentTaskId] = useState<string | null>(() =>
+    sessionStorage.getItem(ACTIVE_TASK_KEY),
+  );
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const actionTriggerRef = useRef<HTMLElement | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const stream = useMemo(() => new DashboardStream(client), [client]);
+  const task = useQuery({
+    ...taskQuery(currentTaskId ?? ''),
+    enabled: currentTaskId !== null,
+    refetchInterval: (query) =>
+      taskPollingInterval(streamState, query.state.data?.data.task),
+  });
+  const actionMutation = useMutation({
+    mutationFn: ({ action, body }: { action: ManualAction; body?: object }) =>
+      api.action(action, body),
+    onSuccess: (response) => {
+      const id = response.data.taskId;
+      setCurrentTaskId(id);
+      sessionStorage.setItem(ACTIVE_TASK_KEY, id);
+      setActionError(null);
+    },
+    onError: (error) => {
+      if (error instanceof ApiClientError && error.details?.activeTaskId) {
+        const id = error.details.activeTaskId;
+        setCurrentTaskId(id);
+        sessionStorage.setItem(ACTIVE_TASK_KEY, id);
+        setActionError('已有手动任务正在执行，已切换到该任务。');
+        return;
+      }
+      setActionError(formatApiError(error));
+    },
+  });
+  const settingsMutation = useMutation({
+    mutationFn: api.updateSettings,
+    onSuccess: (response) => {
+      client.setQueryData(queryKeys.settings, response);
+      void client.invalidateQueries({
+        queryKey: queryKeys.monitoring,
+        exact: true,
+      });
+      setSettingsOpen(false);
+      settingsButtonRef.current?.focus();
+    },
+  });
 
   useEffect(() => {
     const unsubscribe = stream.subscribe(setStreamState);
@@ -602,6 +1045,50 @@ export function Dashboard() {
   const directReachable = directTargets.filter(
     (target) => siteMap?.[target]?.reachable,
   ).length;
+  const trackedTask = task.data?.data.task;
+  const taskBusy =
+    actionMutation.isPending ||
+    trackedTask?.status === 'queued' ||
+    trackedTask?.status === 'running';
+
+  const submitAction = (action: ManualAction, body?: object) => {
+    if (taskBusy) return;
+    actionMutation.mutate({ action, body });
+  };
+  const requestAction = (action: ManualAction, ip?: string) => {
+    setActionError(null);
+    if (action === 'health-check' || action === 'diagnose') {
+      submitAction(action);
+      return;
+    }
+    actionTriggerRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setConfirmation({ action, ip });
+  };
+  const closeConfirmation = () => {
+    setConfirmation(null);
+    window.setTimeout(() => actionTriggerRef.current?.focus());
+  };
+  const confirmAction = () => {
+    if (!confirmation) return;
+    submitAction(
+      confirmation.action,
+      confirmation.action === 'apply' ? { ip: confirmation.ip } : {},
+    );
+    closeConfirmation();
+  };
+  const dismissTask = () => {
+    setCurrentTaskId(null);
+    sessionStorage.removeItem(ACTIVE_TASK_KEY);
+    setActionError(null);
+  };
+  const closeSettings = () => {
+    setSettingsOpen(false);
+    settingsMutation.reset();
+    settingsButtonRef.current?.focus();
+  };
 
   const handleRefresh = async () => {
     setNow(Date.now());
@@ -635,6 +1122,7 @@ export function Dashboard() {
             <span aria-hidden="true">↻</span> {fetching ? '刷新中' : '刷新状态'}
           </button>
           <button
+            ref={settingsButtonRef}
             className="icon-button"
             aria-label="打开设置"
             onClick={() => setSettingsOpen(true)}
@@ -674,10 +1162,24 @@ export function Dashboard() {
             <span>{errorSummary(errors)}</span>
           </div>
         ) : null}
+        {actionError ? (
+          <div className="banner warning" role="alert">
+            <strong>操作未受理</strong>
+            <span>{actionError}</span>
+          </div>
+        ) : null}
+        <TaskPanel
+          task={trackedTask}
+          loading={task.isPending && currentTaskId !== null}
+          error={task.error}
+          onClose={dismissTask}
+        />
         <EntryCard
           snapshot={status.data?.data.snapshot}
           settings={settings.data?.data.settings}
           offline={offline}
+          busy={taskBusy}
+          onAction={requestAction}
         />
 
         <section aria-labelledby="internet-title">
@@ -729,6 +1231,13 @@ export function Dashboard() {
             diagnosis={candidates.data?.data.diagnosis}
             now={now}
             offline={offline}
+            currentIp={
+              status.data?.data.snapshot?.lock.locked
+                ? status.data.data.snapshot.lock.ip
+                : null
+            }
+            busy={taskBusy}
+            onApply={(ip) => requestAction('apply', ip)}
           />
           <EventsPanel events={events.data?.data.items} />
         </div>
@@ -736,7 +1245,20 @@ export function Dashboard() {
       <SettingsDrawer
         open={settingsOpen}
         settings={settings.data?.data.settings}
-        onClose={() => setSettingsOpen(false)}
+        onClose={closeSettings}
+        busy={taskBusy}
+        saving={settingsMutation.isPending}
+        saveError={
+          settingsMutation.error ? formatApiError(settingsMutation.error) : null
+        }
+        onSave={(value) => settingsMutation.mutate(value)}
+      />
+      <ConfirmDialog
+        confirmation={confirmation}
+        snapshot={status.data?.data.snapshot}
+        diagnosis={candidates.data?.data.diagnosis}
+        onCancel={closeConfirmation}
+        onConfirm={confirmAction}
       />
     </div>
   );

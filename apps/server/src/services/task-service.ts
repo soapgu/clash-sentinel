@@ -5,6 +5,7 @@ import type {
   StoredTask,
   StreamResource,
   TaskType,
+  TaskRecoveryStatus,
 } from '@clash-sentinel/shared';
 import { LegacyAdapterError, type LegacyAdapter } from '../legacy/adapter.js';
 import type { SqliteStore } from '../storage/store.js';
@@ -187,13 +188,14 @@ export class TaskService {
           ? error.message
           : '后台任务执行失败';
       let failedPersisted = false;
+      const recoveryStatus = this.failureRecoveryStatus(task, error);
       try {
-        this.store.failTask(task.id, code, message);
+        this.store.failTask(task.id, code, message, recoveryStatus);
         failedPersisted = true;
       } catch {
         // 数据库已经关闭或任务已进入终态时不能再改变真实结果。
       }
-      this.appendEventSafely(task, false, code);
+      this.appendEventSafely(task, false, code, recoveryStatus);
       if (failedPersisted)
         this.notifier.publish('task_failed', [
           this.taskResource(task.id),
@@ -204,6 +206,7 @@ export class TaskService {
         taskId: task.id,
         durationMs: Date.now() - startedAt,
         errorCode: code,
+        recoveryStatus,
         error,
       });
     } finally {
@@ -335,6 +338,7 @@ export class TaskService {
     task: StoredTask,
     succeeded: boolean,
     errorCode?: string,
+    recoveryStatus: TaskRecoveryStatus | null = null,
   ) {
     const critical = ['apply', 'reset', 'rollback'].includes(task.type);
     try {
@@ -345,7 +349,7 @@ export class TaskService {
         summary: succeeded
           ? `${this.actionName(task.type)}已完成`
           : `${this.actionName(task.type)}失败`,
-        details: errorCode ? { errorCode } : null,
+        details: errorCode ? { errorCode, recoveryStatus } : null,
         taskId: task.id,
       });
     } catch (error) {
@@ -356,6 +360,17 @@ export class TaskService {
       });
       // 事件属于辅助审计信息，写入失败不能反转任务真实终态。
     }
+  }
+
+  /** 仅配置类任务公开恢复状态；未知异常不能假定配置已恢复。 */
+  private failureRecoveryStatus(
+    task: StoredTask,
+    error: unknown,
+  ): TaskRecoveryStatus | null {
+    if (!['apply', 'reset', 'rollback'].includes(task.type)) return null;
+    if (error instanceof LegacyAdapterError)
+      return error.recoveryStatus ?? 'unknown';
+    return 'unknown';
   }
 
   /** 将任务类型转换为面向用户的事件名称。 */

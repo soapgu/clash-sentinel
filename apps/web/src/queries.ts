@@ -1,5 +1,5 @@
 import { queryOptions, type QueryClient } from '@tanstack/react-query';
-import type { StreamBaseResource } from '@clash-sentinel/shared';
+import type { StoredTask, StreamBaseResource } from '@clash-sentinel/shared';
 import { api } from './api.js';
 
 export const queryKeys = {
@@ -10,7 +10,24 @@ export const queryKeys = {
   candidates: ['candidates'] as const,
   events: ['events'] as const,
   settings: ['settings'] as const,
+  task: (id: string) => ['task', id] as const,
 };
+
+export const taskQuery = (id: string) =>
+  queryOptions({ queryKey: queryKeys.task(id), queryFn: () => api.task(id) });
+
+/** SSE 在线时依赖失效通知；仅断线且任务未终止时启用两秒轮询。 */
+export function taskPollingInterval(
+  streamState: 'connecting' | 'connected' | 'offline',
+  task: StoredTask | undefined,
+) {
+  if (
+    streamState === 'connected' ||
+    (task && ['succeeded', 'failed', 'interrupted'].includes(task.status))
+  )
+    return false;
+  return 2_000;
+}
 
 export const dashboardQueries = {
   health: queryOptions({ queryKey: queryKeys.health, queryFn: api.health }),

@@ -12,6 +12,7 @@ import {
   siteTargetSchema,
   storedDiagnosisSchema,
   storedTaskSchema,
+  taskRecoveryStatusSchema,
   taskTypeSchema,
   type DiagnosisResult,
   type EventRecord,
@@ -25,6 +26,7 @@ import {
   type StoredJsonObject,
   type StoredTask,
   type TaskType,
+  type TaskRecoveryStatus,
 } from '@clash-sentinel/shared';
 import { DEFAULT_PROJECT_ROOT } from '../project-paths.js';
 import { runMigrations } from './migrations.js';
@@ -619,14 +621,24 @@ export class SqliteStore {
    * @param errorMessage 不包含敏感数据的错误说明。
    * @returns 更新后的任务。
    */
-  failTask(id: string, errorCode: string, errorMessage: string): StoredTask {
+  failTask(
+    id: string,
+    errorCode: string,
+    errorMessage: string,
+    recoveryStatus: TaskRecoveryStatus | null = null,
+  ): StoredTask {
+    const validRecoveryStatus =
+      recoveryStatus === null
+        ? null
+        : taskRecoveryStatusSchema.parse(recoveryStatus);
     this.transitionTask(
       id,
-      "UPDATE tasks SET status = 'failed', finished_at = ?, error_code = ?, error_message = ? WHERE id = ? AND status IN ('queued', 'running')",
+      "UPDATE tasks SET status = 'failed', finished_at = ?, error_code = ?, error_message = ?, recovery_status = ? WHERE id = ? AND status IN ('queued', 'running')",
       [
         Date.now(),
         errorCode.slice(0, 100),
         this.sanitizeText(errorMessage).slice(0, 2_000),
+        validRecoveryStatus,
         id,
       ],
     );
@@ -675,7 +687,11 @@ export class SqliteStore {
       .prepare(
         `
         UPDATE tasks SET status = 'interrupted', finished_at = ?,
-          error_code = 'SERVICE_RESTARTED', error_message = '服务重启中断，任务未自动重放'
+          error_code = 'SERVICE_RESTARTED', error_message = '服务重启中断，任务未自动重放',
+          recovery_status = CASE
+            WHEN type IN ('apply', 'reset', 'rollback', 'auto_switch') THEN 'unknown'
+            ELSE NULL
+          END
         WHERE status = 'running'
       `,
       )
@@ -853,6 +869,7 @@ export class SqliteStore {
       result: decodeJson(row.result_json),
       errorCode: row.error_code,
       errorMessage: row.error_message,
+      recoveryStatus: row.recovery_status ?? null,
     });
   }
 

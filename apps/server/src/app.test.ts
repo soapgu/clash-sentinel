@@ -727,7 +727,12 @@ test('全局动作槽拒绝并发提交并公开活动任务 ID', async () => {
 test('后台稳定错误写入失败任务且 reset 关闭自动切换', async () => {
   const setup = await createSetup({
     rollback: vi.fn(async () => {
-      throw new LegacyAdapterError('NO_BACKUP', '没有可回滚的成功应用');
+      throw new LegacyAdapterError(
+        'NO_BACKUP',
+        '没有可回滚的成功应用',
+        null,
+        'not_required',
+      );
     }),
   });
   const notifications: StreamNotification[] = [];
@@ -740,6 +745,14 @@ test('后台稳定错误写入失败任务且 reset 关闭自动切换', async (
   expect(setup.store.getTask(rollback.body.data.taskId)).toMatchObject({
     status: 'failed',
     errorCode: 'NO_BACKUP',
+    recoveryStatus: 'not_required',
+  });
+  expect(setup.store.listEvents()[0]).toMatchObject({
+    type: 'rollback_failed',
+    details: {
+      errorCode: 'NO_BACKUP',
+      recoveryStatus: 'not_required',
+    },
   });
   expect(notifications.at(-1)).toMatchObject({
     reason: 'task_failed',

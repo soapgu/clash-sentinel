@@ -110,7 +110,11 @@ describe('DashboardStream', () => {
       invalidateQueries.mock.calls.map(
         ([value]) => (value as { queryKey: string[] }).queryKey,
       ),
-    ).toEqual([['status'], ['sites']]);
+    ).toEqual([
+      ['status'],
+      ['sites'],
+      ['task', '11111111-1111-4111-8111-111111111111'],
+    ]);
 
     sources[0]!.malformed();
     expect(microtasks).toHaveLength(0);

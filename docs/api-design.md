@@ -405,7 +405,8 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
         "updatedAt": "2026-09-08T04:18:00.000Z"
       },
       "errorCode": null,
-      "errorMessage": null
+      "errorMessage": null,
+      "recoveryStatus": null
     }
   }
 }
@@ -427,13 +428,19 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
       "input": null,
       "result": null,
       "errorCode": "NO_BACKUP",
-      "errorMessage": "没有可回滚的成功应用"
+      "errorMessage": "没有可回滚的成功应用",
+      "recoveryStatus": "not_required"
     }
   }
 }
 ```
 
 路径格式非法返回 `400 VALIDATION_ERROR`，任务不存在返回 `404 NOT_FOUND`。
+
+`recoveryStatus` 仅描述配置动作失败后的恢复结论：`not_required` 表示修改前已拒绝，
+`recovered` 表示原文件和 Mihomo 运行配置均已恢复，`recovery_failed` 表示恢复或重载失败，
+`unknown` 表示超时、进程异常或服务中断后无法确认。非配置动作以及成功任务为 `null`；客户端不得从
+`errorMessage` 推断恢复状态。
 
 ### 3.8 `GET /api/monitoring`
 
@@ -777,7 +784,8 @@ API 入队前要求 IP 是严格 IPv4，最近诊断状态为 `testable`，且�
         "savedAt": "2026-09-08T04:35:08.000Z"
       },
       "errorCode": null,
-      "errorMessage": null
+      "errorMessage": null,
+      "recoveryStatus": null
     }
   }
 }
@@ -806,7 +814,8 @@ API 入队前要求 IP 是严格 IPv4，最近诊断状态为 `testable`，且�
         "message": "候选 IP 已应用"
       },
       "errorCode": null,
-      "errorMessage": null
+      "errorMessage": null,
+      "recoveryStatus": null
     }
   }
 }
@@ -833,7 +842,8 @@ API 入队前要求 IP 是严格 IPv4，最近诊断状态为 `testable`，且�
         "message": "入口锁定已解除"
       },
       "errorCode": null,
-      "errorMessage": null
+      "errorMessage": null,
+      "recoveryStatus": null
     }
   }
 }
@@ -860,7 +870,8 @@ API 入队前要求 IP 是严格 IPv4，最近诊断状态为 `testable`，且�
         "message": "入口配置已回滚"
       },
       "errorCode": null,
-      "errorMessage": null
+      "errorMessage": null,
+      "recoveryStatus": null
     }
   }
 }

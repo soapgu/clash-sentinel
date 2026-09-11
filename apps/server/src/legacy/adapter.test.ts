@@ -176,6 +176,7 @@ async function expectCode(promise: Promise<unknown>, code: string) {
   } catch (error) {
     expect(error).toBeInstanceOf(LegacyAdapterError);
     expect((error as LegacyAdapterError).code).toBe(code);
+    return error as LegacyAdapterError;
   }
 }
 
@@ -237,10 +238,11 @@ describe('LegacyAdapter', () => {
       reportPath,
       report.replace(/^# generated_epoch\t.*$/m, '# generated_epoch\t1'),
     );
-    await expectCode(
+    const expired = await expectCode(
       setup.adapter().applyIp('198.51.100.20'),
       'REPORT_EXPIRED',
     );
+    expect(expired.recoveryStatus).toBe('not_required');
 
     await writeFile(reportPath, report);
     await writeFile(
@@ -273,13 +275,25 @@ describe('LegacyAdapter', () => {
 
     await writeFile(join(setup.appDir, 'profiles/main.yaml'), setup.raw);
     await setup.adapter().diagnose();
-    await expectCode(
+    const failed = await expectCode(
       setup.adapter({ CLASH_TEST_FAIL_RELOAD: '1' }).applyIp('198.51.100.20'),
       'APPLY_FAILED',
     );
+    expect(failed.recoveryStatus).toBe('recovery_failed');
     expect(
       await readFile(join(setup.appDir, 'profiles/main.js'), 'utf8'),
     ).not.toContain('pinnedIp');
+  });
+
+  test('修改失败且文件和运行配置均恢复时返回 recovered', async () => {
+    const setup = await fixture();
+    await setup.adapter().diagnose();
+    const error = await expectCode(
+      setup.adapter({ CLASH_TEST_FAIL_SMOKE: '1' }).applyIp('198.51.100.20'),
+      'APPLY_FAILED',
+    );
+    expect(error.recoveryStatus).toBe('recovered');
+    expect(error.message).not.toContain('RECOVERY_STATUS');
   });
 
   test('健康状态区分断网、不确定和入口故障', async () => {
@@ -319,7 +333,8 @@ describe('LegacyAdapter', () => {
 
   test('reset 失败保持原文件且无备份时 rollback 返回稳定错误', async () => {
     const setup = await fixture();
-    await expectCode(setup.adapter().rollback(), 'NO_BACKUP');
+    const noBackup = await expectCode(setup.adapter().rollback(), 'NO_BACKUP');
+    expect(noBackup.recoveryStatus).toBe('not_required');
     await setup.adapter().diagnose();
     await setup.adapter().applyIp('198.51.100.20');
     const beforeScript = await readFile(
@@ -330,10 +345,11 @@ describe('LegacyAdapter', () => {
       join(setup.appDir, 'clash-verge.yaml'),
       'utf8',
     );
-    await expectCode(
+    const failed = await expectCode(
       setup.adapter({ CLASH_TEST_FAIL_RELOAD: '1' }).resetLock(),
       'RESET_FAILED',
     );
+    expect(failed.recoveryStatus).toBe('recovery_failed');
     expect(await readFile(join(setup.appDir, 'profiles/main.js'), 'utf8')).toBe(
       beforeScript,
     );

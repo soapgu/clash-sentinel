@@ -228,7 +228,13 @@ apply_ip(){
  meta=$(current_profile);IFS="$TAB" read -r uid name raw script<<<"$meta";sp="$APP_DIR/profiles/$script";[ -f "$sp" ]||die '脚本覆写不存在';safe_script "$sp"||die '当前订阅脚本已有自定义逻辑，拒绝覆盖';domain=$(rv '# domain');old=$(managed pinnedIp "$sp");oldd=$(managed domain "$sp");[ "$old" = "$ip" ]&&[ "$oldd" = "$domain" ]&&{ log "已经锁定 $domain -> ${ip}，无需重复写入";return; }
  backup=$(new_backup);cp "$sp" "$backup/script.js";cp "$RUNTIME_CONFIG" "$backup/clash-verge.yaml";manifest="$backup/manifest.tsv";printf 'script\t%s\tscript.js\nruntime\t%s\tclash-verge.yaml\n' "$sp" "$RUNTIME_CONFIG">"$manifest"
  work=$(mktemp -d "${TMPDIR:-/tmp}/entry-apply.XXXXXX");changed="$work/config";payload="$work/payload";transform "$RUNTIME_CONFIG" "$changed" "$domain" "$ip" "$old";write_script "$sp" "$domain" "$ip"||fail=1;[ "$fail" -ne 0 ]||restore "$changed" "$RUNTIME_CONFIG"||fail=1;[ "$fail" -ne 0 ]||reload "$RUNTIME_CONFIG" "$payload"||fail=1;[ "$fail" -ne 0 ]||smoke||fail=1
- if [ "$fail" -ne 0 ];then restore "$backup/script.js" "$sp"||true;restore "$backup/clash-verge.yaml" "$RUNTIME_CONFIG"||true;reload "$RUNTIME_CONFIG" "$payload">/dev/null 2>&1||true;rm -rf "$work";die '应用失败，文件已恢复';fi
+ if [ "$fail" -ne 0 ];then
+  local recovery=recovered
+  restore "$backup/script.js" "$sp"||recovery=recovery_failed
+  restore "$backup/clash-verge.yaml" "$RUNTIME_CONFIG"||recovery=recovery_failed
+  [ "$recovery" = recovered ]&&reload "$RUNTIME_CONFIG" "$payload">/dev/null 2>&1||recovery=recovery_failed
+  rm -rf "$work";die "RECOVERY_STATUS=$recovery 应用失败"
+ fi
  printf '%s\n' "$backup">"$CURRENT_BACKUP";chmod 600 "$CURRENT_BACKUP" 2>/dev/null||true;rm -rf "$work";log "已锁定当前订阅：$domain -> $ip";log 'Mihomo已重载，本地代理验证通过。';log "备份：$backup"
 }
 reset_lock(){
@@ -238,7 +244,13 @@ reset_lock(){
  domain=$(managed domain "$sp");ip=$(managed pinnedIp "$sp");[ -n "$domain" ]&&[ -n "$ip" ]&&is_ipv4 "$ip"||die '受管脚本内容不完整，未修改配置';controller_init||die 'Mihomo控制接口不可连接；未修改配置'
  backup=$(new_backup);cp "$sp" "$backup/script.js";cp "$RUNTIME_CONFIG" "$backup/clash-verge.yaml";manifest="$backup/manifest.tsv";printf 'script\t%s\tscript.js\nruntime\t%s\tclash-verge.yaml\n' "$sp" "$RUNTIME_CONFIG">"$manifest"
  work=$(mktemp -d "${TMPDIR:-/tmp}/entry-reset.XXXXXX");changed="$work/config";payload="$work/payload";reset_transform "$RUNTIME_CONFIG" "$changed" "$ip" "$domain"||fail=1;[ "$fail" -ne 0 ]||write_passthrough "$sp"||fail=1;[ "$fail" -ne 0 ]||restore "$changed" "$RUNTIME_CONFIG"||fail=1;[ "$fail" -ne 0 ]||reload "$RUNTIME_CONFIG" "$payload"||fail=1;[ "$fail" -ne 0 ]||smoke||fail=1
- if [ "$fail" -ne 0 ];then restore "$backup/script.js" "$sp"||true;restore "$backup/clash-verge.yaml" "$RUNTIME_CONFIG"||true;reload "$RUNTIME_CONFIG" "$payload">/dev/null 2>&1||true;rm -rf "$work";die '恢复失败，文件已还原';fi
+ if [ "$fail" -ne 0 ];then
+  local recovery=recovered
+  restore "$backup/script.js" "$sp"||recovery=recovery_failed
+  restore "$backup/clash-verge.yaml" "$RUNTIME_CONFIG"||recovery=recovery_failed
+  [ "$recovery" = recovered ]&&reload "$RUNTIME_CONFIG" "$payload">/dev/null 2>&1||recovery=recovery_failed
+  rm -rf "$work";die "RECOVERY_STATUS=$recovery 恢复失败"
+ fi
  printf '%s\n' "$backup">"$CURRENT_BACKUP";chmod 600 "$CURRENT_BACKUP" 2>/dev/null||true;rm -rf "$work";log "已恢复当前订阅的原始入口：$domain";log 'Mihomo已重载，本地代理验证通过。';log "备份：$backup"
 }
 health_check(){
@@ -339,6 +351,14 @@ status(){
  if [ -f "$MONITOR_STATE" ];then log "后台健康：$(state_value status)，连续失败=$(state_value consecutive_failures)，推荐=$(state_value recommended_ip)";else log '后台健康：无';fi
  return 0
 }
-rollback(){ need curl;[ -f "$CURRENT_BACKUP" ]||die '没有可回滚的成功应用';local b m k d f w;b=$(cat "$CURRENT_BACKUP");m="$b/manifest.tsv";[ -f "$m" ]||die '备份清单不存在';controller_init||die 'Mihomo控制接口不可连接；未修改配置';while IFS="$TAB" read -r k d f;do case "$k" in script|runtime)restore "$b/$f" "$d"||die "恢复失败：$d";;esac;done<"$m";w=$(mktemp -d "${TMPDIR:-/tmp}/entry-rollback.XXXXXX");reload "$RUNTIME_CONFIG" "$w/payload"||die '文件已恢复，但 Mihomo重载失败';rm -rf "$w";mv "$CURRENT_BACKUP" "$b/rolled-back-at-$(date '+%Y%m%d-%H%M%S')";log "已恢复：$b"; }
+rollback(){
+ need curl;[ -f "$CURRENT_BACKUP" ]||die '没有可回滚的成功应用'
+ local b m k d f w;b=$(cat "$CURRENT_BACKUP");m="$b/manifest.tsv"
+ [ -f "$m" ]||die '备份清单不存在';controller_init||die 'Mihomo控制接口不可连接；未修改配置'
+ while IFS="$TAB" read -r k d f;do case "$k" in script|runtime)restore "$b/$f" "$d"||die "RECOVERY_STATUS=recovery_failed 恢复失败：$d";;esac;done<"$m"
+ w=$(mktemp -d "${TMPDIR:-/tmp}/entry-rollback.XXXXXX")
+ reload "$RUNTIME_CONFIG" "$w/payload"||{ rm -rf "$w";die 'RECOVERY_STATUS=recovery_failed 文件已恢复，但 Mihomo重载失败';}
+ rm -rf "$w";mv "$CURRENT_BACKUP" "$b/rolled-back-at-$(date '+%Y%m%d-%H%M%S')";log "已恢复：$b"
+}
 usage(){ printf '用法：\n  %s diagnose\n  %s apply <IPv4>\n  %s health\n  %s switch\n  %s monitor <install|status|uninstall>\n  %s reset\n  %s status\n  %s rollback\n' "$0" "$0" "$0" "$0" "$0" "$0" "$0" "$0"; }
 case "${1:-}" in diagnose)diagnose;;apply)apply_ip "${2:-}";;health)health_check no;;switch)switch_ip;;monitor)monitor_cmd "${2:-}";;reset)reset_lock;;status)status;;rollback)rollback;;__probe)CONNECT_TIMEOUT="${CLASH_ENTRY_CONNECT_TIMEOUT:-3}";probe "${2:-}" "${3:-}">>"${CLASH_ENTRY_RESULTS_FILE:?}";;help|-h|--help|'')usage;;*)usage>&2;exit 1;;esac

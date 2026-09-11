@@ -8,6 +8,10 @@ import {
   settingsResponseSchema,
   sitesResponseSchema,
   statusResponseSchema,
+  taskAcceptedResponseSchema,
+  taskResponseSchema,
+  type ApiErrorDetails,
+  type SettingsUpdate,
 } from '@clash-sentinel/shared';
 
 /** 便宜的后台存活探针应快速失败。 */
@@ -25,6 +29,7 @@ export class ApiClientError extends Error {
     public readonly status?: number,
     public readonly code?: string,
     public readonly requestId?: string,
+    public readonly details?: ApiErrorDetails,
   ) {
     super(message);
     this.name = 'ApiClientError';
@@ -33,6 +38,8 @@ export class ApiClientError extends Error {
 
 export interface RequestJsonOptions {
   timeoutMs: number;
+  method?: 'GET' | 'POST' | 'PUT';
+  body?: unknown;
   fetcher?: typeof fetch;
   timeoutSignal?: (timeoutMs: number) => AbortSignal;
 }
@@ -47,7 +54,18 @@ export async function requestJson<T>(
   const timeoutSignal = options.timeoutSignal ?? AbortSignal.timeout;
   try {
     const response = await fetcher(url, {
-      headers: { Accept: 'application/json' },
+      ...(options.method && options.method !== 'GET'
+        ? { method: options.method }
+        : {}),
+      headers: {
+        Accept: 'application/json',
+        ...(options.body === undefined
+          ? {}
+          : { 'Content-Type': 'application/json' }),
+      },
+      ...(options.body === undefined
+        ? {}
+        : { body: JSON.stringify(options.body) }),
       signal: timeoutSignal(options.timeoutMs),
     });
     const body: unknown = await response.json().catch(() => undefined);
@@ -60,6 +78,7 @@ export async function requestJson<T>(
           response.status,
           error.data.error.code,
           error.data.requestId,
+          error.data.error.details,
         );
       throw new ApiClientError(
         'response',
@@ -85,7 +104,23 @@ export async function requestJson<T>(
 const readSnapshot = <T>(url: string, schema: ZodType<T>) =>
   requestJson(url, schema, { timeoutMs: SNAPSHOT_REQUEST_TIMEOUT_MS });
 
-/** 看板只读 API。 */
+/** 使用统一超时和响应校验提交业务写请求。 */
+const writeJson = <T>(
+  url: string,
+  method: 'POST' | 'PUT',
+  body: unknown,
+  schema: ZodType<T>,
+) =>
+  requestJson(url, schema, {
+    timeoutMs: SNAPSHOT_REQUEST_TIMEOUT_MS,
+    method,
+    body,
+  });
+
+export type ManualAction =
+  'health-check' | 'diagnose' | 'apply' | 'reset' | 'rollback';
+
+/** 看板读写 API；业务写操作只能通过这里进入统一错误处理。 */
 export const api = {
   health: () =>
     requestJson('/api/health', healthResponseSchema, {
@@ -98,4 +133,14 @@ export const api = {
   events: () =>
     readSnapshot('/api/events?limit=50&offset=0', eventsResponseSchema),
   settings: () => readSnapshot('/api/settings', settingsResponseSchema),
+  task: (id: string) => readSnapshot(`/api/tasks/${id}`, taskResponseSchema),
+  action: (action: ManualAction, body: object = {}) =>
+    writeJson(
+      `/api/actions/${action}`,
+      'POST',
+      body,
+      taskAcceptedResponseSchema,
+    ),
+  updateSettings: (settings: SettingsUpdate) =>
+    writeJson('/api/settings', 'PUT', settings, settingsResponseSchema),
 };

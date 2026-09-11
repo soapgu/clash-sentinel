@@ -139,7 +139,21 @@ const initialSchema: Migration = {
 };
 
 /** 按版本升序排列的全部数据库迁移。 */
-export const migrations: readonly Migration[] = [initialSchema];
+const taskRecoveryStatus: Migration = {
+  version: 2,
+  name: 'task_recovery_status',
+  up(database) {
+    database.exec(`
+      ALTER TABLE tasks ADD COLUMN recovery_status TEXT
+        CHECK (recovery_status IN ('not_required', 'recovered', 'recovery_failed', 'unknown'));
+    `);
+  },
+};
+
+export const migrations: readonly Migration[] = [
+  initialSchema,
+  taskRecoveryStatus,
+];
 
 /**
  * 在独立事务中应用所有尚未执行的迁移。

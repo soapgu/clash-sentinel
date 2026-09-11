@@ -120,14 +120,17 @@ describe('SQLite 迁移', () => {
     const rows = database
       .prepare('SELECT version, name FROM schema_migrations')
       .all();
-    expect(rows).toEqual([{ version: 1, name: 'initial_schema' }]);
+    expect(rows).toEqual([
+      { version: 1, name: 'initial_schema' },
+      { version: 2, name: 'task_recovery_status' },
+    ]);
     database.close();
   });
 
   test('故障迁移回滚其全部结构和版本记录', () => {
     const database = new Database(':memory:');
     const failing: Migration = {
-      version: 2,
+      version: 3,
       name: 'failing_test',
       up(db) {
         db.exec('CREATE TABLE must_rollback (id INTEGER PRIMARY KEY)');
@@ -146,7 +149,7 @@ describe('SQLite 迁移', () => {
       database
         .prepare('SELECT version FROM schema_migrations ORDER BY version')
         .all(),
-    ).toEqual([{ version: 1 }]);
+    ).toEqual([{ version: 1 }, { version: 2 }]);
     database.close();
   });
 
@@ -216,7 +219,12 @@ describe('SqliteStore', () => {
     );
     setup.store.completeTask(completed.id, { status: 'healthy' });
     const failed = setup.store.createTask('apply');
-    setup.store.failTask(failed.id, 'APPLY_FAILED', '应用失败但已经安全恢复');
+    setup.store.failTask(
+      failed.id,
+      'APPLY_FAILED',
+      '应用失败但已经安全恢复',
+      'recovered',
+    );
     setup.store.appendEvent({
       type: 'diagnosis_completed',
       severity: 'info',
@@ -244,11 +252,13 @@ describe('SqliteStore', () => {
     expect(reopened.getTask(running.id)).toMatchObject({
       status: 'interrupted',
       errorCode: 'SERVICE_RESTARTED',
+      recoveryStatus: null,
     });
     expect(reopened.getTask(completed.id)?.status).toBe('succeeded');
     expect(reopened.getTask(failed.id)).toMatchObject({
       status: 'failed',
       errorCode: 'APPLY_FAILED',
+      recoveryStatus: 'recovered',
     });
     expect(reopened.listEvents()).toHaveLength(1);
     reopened.close();
@@ -263,6 +273,22 @@ describe('SqliteStore', () => {
       setup.store.startTask('00000000-0000-4000-8000-000000000000'),
     ).toThrow(StorageError);
     setup.store.close();
+  });
+
+  test('配置任务重启中断标记未知且恢复状态受约束', async () => {
+    const setup = await createStore();
+    const running = setup.store.startTask(setup.store.createTask('apply').id);
+    setup.store.close();
+    const reopened = new SqliteStore({ databasePath: setup.databasePath });
+    expect(reopened.getTask(running.id)).toMatchObject({
+      status: 'interrupted',
+      recoveryStatus: 'unknown',
+    });
+    const failed = reopened.createTask('reset');
+    expect(() =>
+      reopened.failTask(failed.id, 'RESET_FAILED', '失败', 'invalid' as never),
+    ).toThrow();
+    reopened.close();
   });
 
   test('数量清理保留当前快照和最近历史', async () => {
