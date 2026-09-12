@@ -415,6 +415,8 @@ SQLite：执行 NOT NULL、CHECK、主键、唯一键和外键约束
 `queued`、`running`、`succeeded`、`failed`、`interrupted`。索引
 `tasks_created_idx(created_at DESC)` 支持按创建时间读取最近任务。
 
+`health_check` 记录对应通过动作接口发起的手动健康检查。定时健康检查由 `TaskEngine` 以瞬时根任务执行，继续保存健康快照、站点结果和状态迁移事件，但不在 `tasks` 中创建、更新或保留根任务记录。定时检查满足自动切换条件时生成的 `auto_switch` 仍写入本表，并遵循相同的任务状态转换、恢复状态和配置动作审计规则。
+
 ### 5.9 `events`
 
 保存用户可见事件和必要审计摘要。

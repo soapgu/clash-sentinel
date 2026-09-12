@@ -446,7 +446,7 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
 
 > 状态：Step 8 已实现契约。
 
-读取当前设置、`HealthScheduler` 在本次进程生命周期内维护的运行态，以及当前占用全局操作租约的任务 ID。该接口没有副作用，不执行 Shell 或网络检测，也不创建任务或事件。
+读取当前设置、`HealthScheduler` 在本次进程生命周期内维护的运行态，以及 `TaskEngine` 当前占用进程内全局操作槽的持久化任务 ID。该接口没有副作用，不执行 Shell 或网络检测，也不创建任务或事件。
 
 `state` 只允许以下三个值：
 
@@ -657,7 +657,7 @@ data: {"version":1,"id":3,"occurredAt":"2026-09-09T04:00:00.000Z","reason":"moni
 
 ### 5.1 通用任务语义
 
-`health-check`、`diagnose`、`apply`、`reset`、`rollback` 与内部 `auto_switch` 共用一个进程内全局动作槽。检查、创建任务和占用槽之间不经过异步等待；已有动作时返回 `409 ACTION_CONFLICT`。`auto_switch` 没有独立 POST 接口，只能由刚完成的手动或定时健康检测触发。
+`health-check`、`diagnose`、`apply`、`reset`、`rollback` 与内部 `auto_switch` 共用一个由 `TaskEngine` 管理的进程内全局动作槽。检查、创建任务和占用槽之间不经过异步等待；已有动作时返回 `409 ACTION_CONFLICT`。`auto_switch` 没有独立 POST 接口，只能由刚完成的手动或定时健康检测触发。手动动作会创建持久化任务；定时健康检查通过同一引擎瞬时执行，不创建 `health_check` 任务记录。
 
 成功受理统一返回 HTTP `202`：
 
@@ -702,7 +702,7 @@ stateDiagram-v2
 
 ### 5.2 `POST /api/actions/health-check`
 
-请求体必须为 `{}`。后台执行与定时监测相同的完整六站检测；国内至少两个站点成功且入口已锁定时，再执行 Legacy `healthCheck()`，补齐订阅、入口和连续失败信息，保存站点历史及健康快照。失败首次达到当前设置阈值时，由 Node.js 编排严格诊断并保存候选；Legacy 健康命令本身不再隐式诊断。健康任务持久化完成后仍持有原操作租约，并使用刚保存的快照评估自动切换。保留已有冷却截止时间。
+请求体必须为 `{}`。后台创建持久化 `health_check` 任务，并执行与定时监测相同的完整六站检测；国内至少两个站点成功且入口已锁定时，再执行 Legacy `healthCheck()`，补齐订阅、入口和连续失败信息，保存站点历史及健康快照。失败首次达到当前设置阈值时，由 Node.js 编排严格诊断并保存候选；Legacy 健康命令本身不再隐式诊断。`HealthCheckService` 使用最终快照评估自动切换；满足条件时，健康检查 Handler 通过 `nextTasks` 生成持久化 `auto_switch` 任务，并由 `TaskEngine` 在同一执行链和全局操作槽中继续执行。定时健康检查执行相同流程，但其 `health_check` 根任务是瞬时任务，不写入任务表。保留已有冷却截止时间。
 
 ```json
 {}
