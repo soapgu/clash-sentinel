@@ -121,8 +121,6 @@ async function setup(
       },
       healthCheck: { run: vi.fn() },
       autoSwitch: service,
-      planAutoSwitch: (health, source, parentId) =>
-        service.prepare(health, source, parentId),
     }),
   });
   const lease = coordinator.tryAcquireScheduled()!;

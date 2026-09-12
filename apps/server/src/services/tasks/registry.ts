@@ -1,15 +1,15 @@
 import type { LegacyAdapter } from '../../legacy/adapter.js';
 import type { SqliteStore } from '../../storage/store.js';
-import type { AutoSwitchService } from '../auto-switch-service.js';
+import type {
+  AutoSwitchPlanner,
+  AutoSwitchService,
+} from '../auto-switch-service.js';
 import type { HealthCheckService } from '../health/health-check.js';
 import { ApplyTaskHandler } from './apply-task-handler.js';
 import { AutoSwitchTaskHandler } from './auto-switch-task-handler.js';
 import type { TaskHandlerRegistry } from './contracts.js';
 import { DiagnoseTaskHandler } from './diagnose-task-handler.js';
-import {
-  HealthCheckTaskHandler,
-  type AutoSwitchPlanner,
-} from './health-check-task-handler.js';
+import { HealthCheckTaskHandler } from './health-check-task-handler.js';
 import { ResetTaskHandler } from './reset-task-handler.js';
 import { RollbackTaskHandler } from './rollback-task-handler.js';
 
@@ -37,12 +37,11 @@ export interface TaskHandlerDependencies {
   /** 手动健康任务调用的完整健康编排器。 */
   healthCheck: Pick<HealthCheckService, 'run'>;
   /** 自动切换 Handler 使用的上下文恢复、执行和保护能力。 */
-  autoSwitch: Pick<
-    AutoSwitchService,
-    'restorePlan' | 'execute' | 'handleFailure' | 'handleInvalidContext'
-  >;
-  /** 手动健康检查成功后生成可选后续任务的规划器。 */
-  planAutoSwitch: AutoSwitchPlanner;
+  autoSwitch: AutoSwitchPlanner &
+    Pick<
+      AutoSwitchService,
+      'restorePlan' | 'execute' | 'handleFailure' | 'handleInvalidContext'
+    >;
 }
 
 /**
@@ -55,10 +54,10 @@ export function createTaskHandlerRegistry(
   dependencies: TaskHandlerDependencies,
 ): TaskHandlerRegistry {
   return {
-    health_check: new HealthCheckTaskHandler(
-      dependencies.healthCheck,
-      dependencies.planAutoSwitch,
-    ),
+    health_check: new HealthCheckTaskHandler({
+      healthCheck: dependencies.healthCheck,
+      autoSwitchPlanner: dependencies.autoSwitch,
+    }),
     diagnose: new DiagnoseTaskHandler(dependencies.store, dependencies.adapter),
     apply: new ApplyTaskHandler(dependencies.store, dependencies.adapter),
     reset: new ResetTaskHandler(dependencies.store, dependencies.adapter),

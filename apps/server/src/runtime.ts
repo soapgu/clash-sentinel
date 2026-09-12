@@ -80,8 +80,6 @@ export function createRuntimeDependencies(
     adapter,
     healthCheck,
     autoSwitch,
-    planAutoSwitch: (health, source, parentId) =>
-      autoSwitch.prepare(health, source, parentId),
   });
   const taskEngine = new TaskEngine({
     store,
@@ -96,12 +94,9 @@ export function createRuntimeDependencies(
     scheduler: new HealthScheduler({
       store,
       coordinator,
-      healthCheck,
       notifier,
       logger,
-      taskEngine: taskEngine,
-      planAutoSwitch: (health, source, parentId) =>
-        autoSwitch.prepare(health, source, parentId),
+      taskEngine,
     }),
     notifier,
     siteProbe,

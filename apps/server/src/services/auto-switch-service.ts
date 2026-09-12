@@ -18,6 +18,21 @@ import type { TaskSubmission } from './tasks/contracts.js';
 /** 自动切换服务允许调用的最小 Legacy 诊断和应用能力。 */
 type AutoSwitchLegacyOperations = Pick<LegacyAdapter, 'diagnose' | 'applyIp'>;
 
+/** 根据刚完成的健康检查声明可选自动切换任务的领域端口。 */
+export interface AutoSwitchPlanner {
+  /**
+   * @param health 已落库的健康快照及本轮变化摘要。
+   * @param source 手动或定时检测来源。
+   * @param parentId 健康任务 ID 或调度 runId。
+   * @returns 满足触发条件时返回任务声明，否则返回 null。
+   */
+  prepare(
+    health: HealthCheckExecution,
+    source: HealthCheckSource,
+    parentId: string,
+  ): TaskSubmission | null;
+}
+
 /** 自动切换领域服务的构造依赖。 */
 export interface AutoSwitchServiceOptions {
   /** 读取设置、健康快照和诊断并写入切换结果的存储门面。 */
@@ -81,7 +96,7 @@ export interface AutoSwitchFailureHandling {
 }
 
 /** 在健康轮次持有的全局租约内执行自动诊断、切换、冷却和故障保护。 */
-export class AutoSwitchService {
+export class AutoSwitchService implements AutoSwitchPlanner {
   /** 统一生成冷却截止时间的可注入时钟。 */
   private readonly now: () => Date;
   /** 自动处理领域日志器。 */

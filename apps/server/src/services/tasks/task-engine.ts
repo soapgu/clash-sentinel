@@ -16,6 +16,7 @@ import type {
 import type { StatusNotifier } from '../status-notifier.js';
 import type {
   TaskExecutionResult,
+  TaskExecutionIdentity,
   TaskFailureResult,
   TaskHandler,
   TaskHandlerRegistry,
@@ -45,6 +46,16 @@ export interface TaskEngineOptions {
   /** 可选统一日志器；测试省略时使用空实现。 */
   logger?: AppLogger;
 }
+
+/** 不写任务生命周期的内部执行结果。 */
+export type TransientTaskOutcome =
+  | { succeeded: true; changedResources: StreamResource[] }
+  | {
+      succeeded: false;
+      changedResources: StreamResource[];
+      error: unknown;
+      errorCode: string;
+    };
 
 /** 只负责任务生命周期、互斥、持久化、审计、通知和关闭的通用引擎。 */
 export class TaskEngine {
@@ -148,6 +159,49 @@ export class TaskEngine {
     return await this.runCreatedTask(task, submission, lease);
   }
 
+  /**
+   * 在已有租约中执行不持久化根任务的 Handler；成功后续任务仍正常持久化。
+   */
+  async runTransientWithLease(
+    submission: TaskSubmission,
+    lease: OperationLease,
+    executionId: string,
+  ): Promise<TransientTaskOutcome> {
+    const task: TaskExecutionIdentity = {
+      id: executionId,
+      type: submission.type,
+      input: submission.input ?? null,
+      persistence: 'transient',
+    };
+    const handler = this.options.handlers[task.type];
+    let execution: TaskExecutionResult;
+    try {
+      const input = handler.parseInput(task.input);
+      execution = await handler.execute({
+        task,
+        input,
+        lease,
+        logger: this.logger,
+      });
+    } catch (error) {
+      const failure = await this.resolveFailure(handler, task, lease, error);
+      return {
+        succeeded: false,
+        changedResources: [...new Set(failure.changedResources)],
+        error,
+        errorCode: failure.code,
+      };
+    }
+    const changedResources = [...new Set(execution.changedResources)];
+    for (const followUp of execution.followUps ?? []) {
+      const followUpResources = await this.runWithLease(followUp, lease);
+      for (const resource of followUpResources)
+        if (!changedResources.includes(resource))
+          changedResources.push(resource);
+    }
+    return { succeeded: true, changedResources };
+  }
+
   /** 停止接收新任务；已经开始的任务链继续执行到安全终点。 */
   stopAccepting() {
     this.accepting = false;
@@ -172,7 +226,19 @@ export class TaskEngine {
     lease: OperationLease,
   ): Promise<StreamResource[]> {
     const handler = this.options.handlers[task.type];
-    const outcome = await this.runTask(task, handler, submission, lease);
+    const identity: TaskExecutionIdentity = {
+      id: task.id,
+      type: task.type,
+      input: task.input,
+      persistence: 'persistent',
+    };
+    const outcome = await this.runTask(
+      task,
+      identity,
+      handler,
+      submission,
+      lease,
+    );
     if (!outcome.succeeded) return outcome.changedResources;
     const resources = [...outcome.changedResources];
     for (const followUp of outcome.execution.followUps ?? []) {
@@ -217,6 +283,7 @@ export class TaskEngine {
    */
   private async runTask(
     task: StoredTask,
+    identity: TaskExecutionIdentity,
     handler: TaskHandler,
     submission: TaskSubmission,
     lease: OperationLease,
@@ -241,7 +308,7 @@ export class TaskEngine {
       ]);
       const input = handler.parseInput(task.input);
       const execution = await handler.execute({
-        task,
+        task: identity,
         input,
         lease,
         logger: this.logger,
@@ -268,7 +335,12 @@ export class TaskEngine {
       });
       return { succeeded: true, execution, changedResources };
     } catch (error) {
-      const failure = await this.resolveFailure(handler, task, lease, error);
+      const failure = await this.resolveFailure(
+        handler,
+        identity,
+        lease,
+        error,
+      );
       let failedPersisted = false;
       try {
         this.options.store.failTask(
@@ -320,7 +392,7 @@ export class TaskEngine {
    */
   private async resolveFailure(
     handler: TaskHandler,
-    task: StoredTask,
+    task: TaskExecutionIdentity,
     lease: OperationLease,
     error: unknown,
   ): Promise<TaskFailureResult> {

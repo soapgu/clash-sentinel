@@ -5,11 +5,9 @@ import type {
 import type { SqliteStore } from '../../storage/store.js';
 import type { OperationCoordinator } from '../operation-coordinator.js';
 import type { StatusNotifier } from '../status-notifier.js';
-import type { HealthCheckService } from './health-check.js';
 import { randomUUID } from 'node:crypto';
 import { noopLogger, type AppLogger } from '../../logging.js';
 import type { TaskEngine } from '../tasks/task-engine.js';
-import type { AutoSwitchPlanner } from '../tasks/health-check-task-handler.js';
 
 /** 定时健康检测调度器依赖。 */
 export interface HealthSchedulerOptions {
@@ -17,18 +15,14 @@ export interface HealthSchedulerOptions {
   store: SqliteStore;
   /** 与全部手动 Legacy 动作共享的全局执行槽。 */
   coordinator: OperationCoordinator;
-  /** 执行完整六站检测的编排器。 */
-  healthCheck: Pick<HealthCheckService, 'run'>;
   /** 向 Web 客户端发布调度运行态和快照失效通知。 */
   notifier: StatusNotifier;
   /** 返回当前 Unix 毫秒时间；测试可注入可控时钟。 */
   now?: () => number;
   /** 记录调度计划、执行、跳过和失败。 */
   logger?: AppLogger;
-  /** 在定时检测已有租约中执行声明式自动任务的统一引擎。 */
-  taskEngine?: Pick<TaskEngine, 'runWithLease'>;
-  /** 根据定时检测结果生成可选 auto_switch 任务的领域规划器。 */
-  planAutoSwitch?: AutoSwitchPlanner;
+  /** 在定时检测已有租约中执行瞬时健康任务的统一引擎。 */
+  taskEngine: Pick<TaskEngine, 'runTransientWithLease'>;
 }
 
 /** 启动即检查、按最新设置递归调度且不会重入的健康调度器。 */
@@ -116,29 +110,21 @@ export class HealthScheduler {
     this.options.notifier.publish('monitoring_started', ['monitoring']);
     const changedResources: StreamResource[] = ['monitoring'];
     let failed = false;
-    this.currentRun = this.options.healthCheck
-      .run('scheduled', runId)
-      .then(async (execution) => {
-        if (execution.changes.statusUpdated) changedResources.push('status');
-        if (execution.changes.sitesUpdated) changedResources.push('sites');
-        if (execution.changes.candidatesUpdated)
-          changedResources.push('candidates');
-        if (execution.changes.eventAppended) changedResources.push('events');
-        if (execution.changes.settingsUpdated)
-          changedResources.push('settings');
-        const automaticSubmission = this.options.planAutoSwitch?.(
-          execution,
-          'scheduled',
-          runId,
-        );
-        const automaticResources =
-          automaticSubmission && this.options.taskEngine
-            ? await this.options.taskEngine.runWithLease(
-                automaticSubmission,
-                lease,
-              )
-            : [];
-        for (const resource of automaticResources)
+    this.currentRun = this.options.taskEngine
+      .runTransientWithLease({ type: 'health_check' }, lease, runId)
+      .then((outcome) => {
+        if (!outcome.succeeded) {
+          failed = true;
+          this.logger.error('health:scheduler', 'run failed', {
+            runId,
+            durationMs: this.now() - startedAt,
+            errorCode: outcome.errorCode,
+          });
+          changedResources.push(...outcome.changedResources, 'status', 'sites');
+          if (this.appendFailureEvent()) changedResources.push('events');
+          return;
+        }
+        for (const resource of outcome.changedResources)
           if (!changedResources.includes(resource))
             changedResources.push(resource);
       })

@@ -129,6 +129,100 @@ test('声明式后续任务复用租约并经过同一个引擎', async () => {
   expect(value.coordinator.getActive()).toBeNull();
 });
 
+test('瞬时任务执行 Handler 但不写任务、审计或生命周期通知', async () => {
+  const execute = vi.fn(async () => ({
+    result: {},
+    changedResources: ['status', 'status'] as const,
+    audit: { summary: '不应写入' },
+  }));
+  const value = await setup(
+    registry({ health_check: handler('health_check', execute) }),
+  );
+  const lease = value.coordinator.tryAcquireScheduled()!;
+
+  const outcome = await value.engine.runTransientWithLease(
+    { type: 'health_check' },
+    lease,
+    '550e8400-e29b-41d4-a716-446655440000',
+  );
+
+  expect(outcome).toEqual({ succeeded: true, changedResources: ['status'] });
+  expect(execute).toHaveBeenCalledWith(
+    expect.objectContaining({
+      task: expect.objectContaining({ persistence: 'transient' }),
+    }),
+  );
+  expect(value.store.listTasks()).toEqual([]);
+  expect(value.store.listEvents()).toEqual([]);
+  expect(value.notifications).toEqual([]);
+  lease.release();
+});
+
+test('瞬时任务失败时归一化错误且不执行后续持久化生命周期', async () => {
+  const error = new Error('瞬时失败');
+  const value = await setup(
+    registry({
+      health_check: handler('health_check', async () => {
+        throw error;
+      }),
+    }),
+  );
+  const lease = value.coordinator.tryAcquireScheduled()!;
+
+  const outcome = await value.engine.runTransientWithLease(
+    { type: 'health_check' },
+    lease,
+    '550e8400-e29b-41d4-a716-446655440000',
+  );
+
+  expect(outcome).toEqual({
+    succeeded: false,
+    changedResources: [],
+    error,
+    errorCode: 'INTERNAL_ERROR',
+  });
+  expect(value.store.listTasks()).toEqual([]);
+  expect(value.store.listEvents()).toEqual([]);
+  expect(value.notifications).toEqual([]);
+  lease.release();
+});
+
+test('瞬时根任务的后续任务继续持久化并合并资源', async () => {
+  const health = vi.fn(async (): Promise<TaskExecutionResult> => ({
+    result: {},
+    changedResources: ['status'],
+    followUps: [{ type: 'auto_switch', input: { trigger: 'scheduled' } }],
+  }));
+  const automatic = vi.fn(async () => ({
+    result: { status: 'changed' },
+    changedResources: ['settings'] as const,
+  }));
+  const value = await setup(
+    registry({
+      health_check: handler('health_check', health),
+      auto_switch: handler('auto_switch', automatic),
+    }),
+  );
+  const lease = value.coordinator.tryAcquireScheduled()!;
+
+  const outcome = await value.engine.runTransientWithLease(
+    { type: 'health_check' },
+    lease,
+    '550e8400-e29b-41d4-a716-446655440000',
+  );
+
+  expect(outcome).toEqual({
+    succeeded: true,
+    changedResources: ['status', 'settings', 'events'],
+  });
+  expect(value.store.listTasks()).toMatchObject([
+    { type: 'auto_switch', status: 'succeeded' },
+  ]);
+  expect(value.coordinator.getActive()).toMatchObject({ kind: 'task' });
+  lease.release();
+  expect(value.coordinator.getActive()).toBeNull();
+});
+
 test('注册表错误在启动时失败，TaskEngine 不包含具体业务分派', async () => {
   expect(
     () =>

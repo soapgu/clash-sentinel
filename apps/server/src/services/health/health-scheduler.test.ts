@@ -29,9 +29,7 @@ afterEach(async () => {
 /** 创建测试调度器及其隔离存储。 */
 async function setup(
   run: () => Promise<HealthCheckExecution>,
-  taskEngine?: {
-    runWithLease: ReturnType<typeof vi.fn<() => Promise<StreamResource[]>>>;
-  },
+  transientResources?: StreamResource[],
 ) {
   const root = await mkdtemp(join(tmpdir(), 'clash-scheduler-'));
   const store = new SqliteStore({ databasePath: join(root, 'scheduler.db') });
@@ -39,17 +37,42 @@ async function setup(
   const coordinator = new OperationCoordinator();
   const notifier = new StatusNotificationCenter();
   const healthCheck = { run: vi.fn(run) };
+  const taskEngine = {
+    runTransientWithLease: vi.fn(async () => {
+      try {
+        const value = await healthCheck.run();
+        const resources: StreamResource[] = [];
+        if (value.changes.statusUpdated) resources.push('status');
+        if (value.changes.sitesUpdated) resources.push('sites');
+        if (value.changes.candidatesUpdated) resources.push('candidates');
+        if (value.changes.eventAppended) resources.push('events');
+        if (value.changes.settingsUpdated) resources.push('settings');
+        resources.push(...(transientResources ?? []));
+        return { succeeded: true as const, changedResources: resources };
+      } catch (error) {
+        return {
+          succeeded: false as const,
+          changedResources: [] as StreamResource[],
+          error,
+          errorCode: 'INTERNAL_ERROR',
+        };
+      }
+    }),
+  };
   const scheduler = new HealthScheduler({
     store,
     coordinator,
-    healthCheck,
     notifier,
     taskEngine,
-    planAutoSwitch: taskEngine
-      ? () => ({ type: 'auto_switch', input: { trigger: 'scheduled' } })
-      : undefined,
   });
-  return { store, coordinator, healthCheck, scheduler, notifier, taskEngine };
+  return {
+    store,
+    coordinator,
+    healthCheck,
+    scheduler,
+    notifier,
+    taskEngine,
+  };
 }
 
 /** 返回调度测试使用的最小合法快照。 */
@@ -196,18 +219,15 @@ test('完成通知仅包含健康检查摘要报告的变化资源', async () =>
 
 test('定时检测完成后在同一租约中执行自动切换并合并变化资源', async () => {
   vi.useFakeTimers();
-  const taskEngine = {
-    runWithLease: vi.fn(async () => ['settings', 'events'] as StreamResource[]),
-  };
-  const value = await setup(async () => execution(), taskEngine);
+  const value = await setup(async () => execution(), ['settings', 'events']);
   const notifications: StreamNotification[] = [];
   value.notifier.subscribe((notification) => notifications.push(notification));
   notifications.length = 0;
   value.scheduler.start();
   await vi.advanceTimersByTimeAsync(0);
-  expect(taskEngine.runWithLease).toHaveBeenCalledOnce();
-  expect(taskEngine.runWithLease.mock.calls[0]?.[0]).toMatchObject({
-    type: 'auto_switch',
+  expect(value.taskEngine.runTransientWithLease).toHaveBeenCalledOnce();
+  expect(value.taskEngine.runTransientWithLease.mock.calls[0]?.[0]).toEqual({
+    type: 'health_check',
   });
   expect(notifications.at(-1)).toMatchObject({
     reason: 'monitoring_completed',

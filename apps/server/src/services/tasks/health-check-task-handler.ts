@@ -1,21 +1,18 @@
 import type { StreamResource } from '@clash-sentinel/shared';
 import type {
   HealthCheckChanges,
-  HealthCheckExecution,
   HealthCheckService,
 } from '../health/health-check.js';
-import {
-  asStoredJson,
-  type TaskHandler,
-  type TaskSubmission,
-} from './contracts.js';
+import type { AutoSwitchPlanner } from '../auto-switch-service.js';
+import { asStoredJson, type TaskHandler } from './contracts.js';
 
-/** 根据刚完成的健康检查决定是否声明一个自动切换任务。 */
-export type AutoSwitchPlanner = (
-  health: HealthCheckExecution,
-  source: 'manual' | 'scheduled',
-  parentId: string,
-) => TaskSubmission | null;
+/** 创建手动健康检查任务 Handler 所需的领域端口。 */
+export interface HealthCheckTaskHandlerOptions {
+  /** 执行并持久化完整健康检测的编排器。 */
+  healthCheck: Pick<HealthCheckService, 'run'>;
+  /** 根据检测结果声明可选自动任务的领域规划器。 */
+  autoSwitchPlanner: AutoSwitchPlanner;
+}
 
 /** 执行手动健康检查，并声明可能需要在同一租约中运行的自动任务。 */
 export class HealthCheckTaskHandler implements TaskHandler {
@@ -32,13 +29,9 @@ export class HealthCheckTaskHandler implements TaskHandler {
   }
 
   /**
-   * @param healthCheck 手动和定时检测共用的健康编排器。
-   * @param planAutoSwitch 只生成声明式后续任务的自动切换规划器。
+   * @param options 健康检测编排器和自动切换规划器。
    */
-  constructor(
-    private readonly healthCheck: Pick<HealthCheckService, 'run'>,
-    private readonly planAutoSwitch: AutoSwitchPlanner,
-  ) {}
+  constructor(private readonly options: HealthCheckTaskHandlerOptions) {}
 
   /**
    * 执行手动检测并保持公开任务结果为扁平 HealthSnapshot。
@@ -47,11 +40,19 @@ export class HealthCheckTaskHandler implements TaskHandler {
    * @returns 健康快照、精确资源变化和可选自动切换后续任务。
    */
   async execute({ task }: Parameters<TaskHandler['execute']>[0]) {
-    const execution = await this.healthCheck.run('manual', task.id);
-    const followUp = this.planAutoSwitch(execution, 'manual', task.id);
+    const source = task.persistence === 'transient' ? 'scheduled' : 'manual';
+    const execution = await this.options.healthCheck.run(source, task.id);
+    const followUp = this.options.autoSwitchPlanner.prepare(
+      execution,
+      source,
+      task.id,
+    );
     return {
       result: asStoredJson(execution.snapshot),
-      changedResources: this.changedResources(execution.changes),
+      changedResources: this.changedResources(
+        execution.changes,
+        task.persistence === 'persistent',
+      ),
       followUps: followUp ? [followUp] : [],
     };
   }
@@ -62,15 +63,19 @@ export class HealthCheckTaskHandler implements TaskHandler {
    * @param changes 健康检查实际成功写入的资源摘要。
    * @returns 去重前的 SSE 资源列表；审计事件保证包含 events。
    */
-  private changedResources(changes: HealthCheckChanges): StreamResource[] {
+  private changedResources(
+    changes: HealthCheckChanges,
+    taskAuditAppended: boolean,
+  ): StreamResource[] {
     const resources: StreamResource[] = [];
     if (changes.statusUpdated) resources.push('status');
     if (changes.sitesUpdated) resources.push('sites');
     if (changes.candidatesUpdated) resources.push('candidates');
     if (changes.eventAppended) resources.push('events');
     if (changes.settingsUpdated) resources.push('settings');
-    // 健康任务本身会追加审计事件。
-    if (!resources.includes('events')) resources.push('events');
+    // 持久化健康任务会由 TaskEngine 追加审计事件。
+    if (taskAuditAppended && !resources.includes('events'))
+      resources.push('events');
     return resources;
   }
 }

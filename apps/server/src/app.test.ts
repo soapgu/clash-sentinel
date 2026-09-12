@@ -198,7 +198,6 @@ async function createSetup(
       adapter,
       healthCheck,
       autoSwitch,
-      planAutoSwitch: () => null,
     }),
   });
   const scheduler = {

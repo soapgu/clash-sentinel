@@ -1,6 +1,5 @@
 import type {
   StoredJsonObject,
-  StoredTask,
   StreamResource,
   TaskRecoveryStatus,
   TaskType,
@@ -54,10 +53,18 @@ export interface TaskFailureResult {
   audit?: TaskAudit;
 }
 
+/** Handler 执行所需的最小任务身份，不要求任务已经持久化。 */
+export interface TaskExecutionIdentity {
+  id: string;
+  type: TaskType;
+  input: StoredJsonObject | null;
+  persistence: 'persistent' | 'transient';
+}
+
 /** TaskEngine 调用 Handler 时提供的进程内执行上下文。 */
 export interface TaskHandlerContext {
-  /** 当前已持久化并进入 running 状态的任务。 */
-  task: StoredTask;
+  /** 当前持久化任务或瞬时执行的最小身份。 */
+  task: TaskExecutionIdentity;
   /** 经过当前 Handler 校验和归一化的任务输入。 */
   input: StoredJsonObject;
   /** 手动、定时检测和自动任务共享的全局操作租约。 */
