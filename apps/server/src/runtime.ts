@@ -4,7 +4,6 @@ import { ClashProxyConfig } from './services/health/proxy-config.js';
 import { HealthCheckService } from './services/health/health-check.js';
 import { HealthScheduler } from './services/health/health-scheduler.js';
 import { UndiciSiteProbe } from './services/health/site-probe.js';
-import { OperationCoordinator } from './services/operation-coordinator.js';
 import { StatusNotificationCenter } from './services/status-notifier.js';
 import { TaskEngine } from './services/tasks/task-engine.js';
 import { createTaskHandlerRegistry } from './services/tasks/registry.js';
@@ -60,7 +59,6 @@ export function createRuntimeDependencies(
     environment,
     logger,
   });
-  const coordinator = new OperationCoordinator();
   const notifier = new StatusNotificationCenter(() => new Date(), logger);
   const siteProbe = new UndiciSiteProbe();
   const healthCheck = new HealthCheckService({
@@ -83,7 +81,6 @@ export function createRuntimeDependencies(
   });
   const taskEngine = new TaskEngine({
     store,
-    coordinator,
     notifier,
     logger,
     handlers,
@@ -93,7 +90,6 @@ export function createRuntimeDependencies(
     taskEngine,
     scheduler: new HealthScheduler({
       store,
-      coordinator,
       notifier,
       logger,
       taskEngine,

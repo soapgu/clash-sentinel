@@ -2,7 +2,6 @@ import { expect, test, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import type { HealthSnapshot } from '@clash-sentinel/shared';
-import type { OperationLease } from '../operation-coordinator.js';
 import { noopLogger } from '../../logging.js';
 import { HealthCheckTaskHandler } from './health-check-task-handler.js';
 import type { TaskExecutionIdentity } from './contracts.js';
@@ -56,7 +55,6 @@ for (const persistence of ['persistent', 'transient'] as const) {
     const result = await handler.execute({
       task,
       input: {},
-      lease: {} as OperationLease,
       logger: noopLogger,
     });
     expect(healthCheck.run).toHaveBeenCalledWith(source, task.id);
@@ -93,7 +91,6 @@ test('健康服务未建议自动切换时不生成下一任务', async () => {
       persistence: 'transient',
     },
     input: {},
-    lease: {} as OperationLease,
     logger: noopLogger,
   });
   expect(result.nextTasks).toEqual([]);

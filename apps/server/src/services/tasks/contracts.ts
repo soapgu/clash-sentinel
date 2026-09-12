@@ -5,7 +5,6 @@ import type {
   TaskType,
 } from '@clash-sentinel/shared';
 import type { AppLogger } from '../../logging.js';
-import type { OperationLease } from '../operation-coordinator.js';
 
 /** 描述一个即将由 TaskEngine 持久化并执行的任务，不包含可执行回调。 */
 export interface TaskSubmission {
@@ -67,8 +66,6 @@ export interface TaskHandlerContext {
   task: TaskExecutionIdentity;
   /** 经过当前 Handler 校验和归一化的任务输入。 */
   input: StoredJsonObject;
-  /** 手动、定时检测和自动任务共享的全局操作租约。 */
-  lease: OperationLease;
   /** Handler 记录领域日志时使用的统一日志器。 */
   logger: AppLogger;
 }

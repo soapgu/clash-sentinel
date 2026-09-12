@@ -3,7 +3,6 @@ import type {
   StreamResource,
 } from '@clash-sentinel/shared';
 import type { SqliteStore } from '../../storage/store.js';
-import type { OperationCoordinator } from '../operation-coordinator.js';
 import type { StatusNotifier } from '../status-notifier.js';
 import { randomUUID } from 'node:crypto';
 import { noopLogger, type AppLogger } from '../../logging.js';
@@ -13,8 +12,6 @@ import type { TaskEngine } from '../tasks/task-engine.js';
 export interface HealthSchedulerOptions {
   /** 动态读取监测开关和周期的 SQLite 门面。 */
   store: SqliteStore;
-  /** 与全部手动 Legacy 动作共享的全局执行槽。 */
-  coordinator: OperationCoordinator;
   /** 向 Web 客户端发布调度运行态和快照失效通知。 */
   notifier: StatusNotifier;
   /** 返回当前 Unix 毫秒时间；测试可注入可控时钟。 */
@@ -22,7 +19,7 @@ export interface HealthSchedulerOptions {
   /** 记录调度计划、执行、跳过和失败。 */
   logger?: AppLogger;
   /** 在定时检测已有租约中执行瞬时健康任务的统一引擎。 */
-  taskEngine: Pick<TaskEngine, 'runTransientWithLease'>;
+  taskEngine: Pick<TaskEngine, 'tryRunScheduledTask' | 'getActiveTaskId'>;
 }
 
 /** 启动即检查、按最新设置递归调度且不会重入的健康调度器。 */
@@ -37,7 +34,7 @@ export class HealthScheduler {
   private readonly now: () => number;
   private readonly logger: AppLogger;
 
-  /** @param options 存储、全局协调器、健康编排器和可选时钟。 */
+  /** @param options 存储、任务引擎、通知器和可选时钟。 */
   constructor(private readonly options: HealthSchedulerOptions) {
     this.now = options.now ?? Date.now;
     this.logger = options.logger ?? noopLogger;
@@ -56,14 +53,13 @@ export class HealthScheduler {
         ? 'waiting'
         : 'disabled';
     const nextRunAt = state === 'waiting' ? this.nextTickAt : null;
-    const active = this.options.coordinator.getActive();
     return {
       enabled,
       state,
       lastStartedAt: this.lastStartedAt,
       lastCompletedAt: this.lastCompletedAt,
       nextRunAt,
-      activeTaskId: active?.kind === 'task' ? active.taskId : null,
+      activeTaskId: this.options.taskEngine.getActiveTaskId(),
     };
   }
 
@@ -94,8 +90,12 @@ export class HealthScheduler {
       this.schedule(settings.checkIntervalMs);
       return;
     }
-    const lease = this.options.coordinator.tryAcquireScheduled();
-    if (!lease) {
+    const runId = randomUUID();
+    const currentRun = this.options.taskEngine.tryRunScheduledTask(
+      { type: 'health_check' },
+      runId,
+    );
+    if (!currentRun) {
       this.logger.warn('health:scheduler', 'run skipped', {
         reason: 'operation_slot_busy',
       });
@@ -103,15 +103,13 @@ export class HealthScheduler {
       return;
     }
     this.lastStartedAt = new Date(this.now()).toISOString();
-    const runId = randomUUID();
     const startedAt = this.now();
     this.logger.info('health:scheduler', 'run started', { runId });
     this.nextTickAt = null;
     this.options.notifier.publish('monitoring_started', ['monitoring']);
     const changedResources: StreamResource[] = ['monitoring'];
     let failed = false;
-    this.currentRun = this.options.taskEngine
-      .runTransientWithLease({ type: 'health_check' }, lease, runId)
+    this.currentRun = currentRun
       .then((outcome) => {
         if (!outcome.succeeded) {
           failed = true;
@@ -144,7 +142,6 @@ export class HealthScheduler {
       })
       .finally(() => {
         this.lastCompletedAt = new Date(this.now()).toISOString();
-        lease.release();
         this.currentRun = null;
         if (!this.stopped)
           this.schedule(this.options.store.getSettings().checkIntervalMs);

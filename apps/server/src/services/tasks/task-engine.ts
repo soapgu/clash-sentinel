@@ -9,10 +9,6 @@ import { taskTypeSchema } from '@clash-sentinel/shared';
 import { ApiError } from '../../api/errors.js';
 import { noopLogger, type AppLogger } from '../../logging.js';
 import type { SqliteStore } from '../../storage/store.js';
-import type {
-  OperationCoordinator,
-  OperationLease,
-} from '../operation-coordinator.js';
 import type { StatusNotifier } from '../status-notifier.js';
 import type {
   TaskExecutionResult,
@@ -37,8 +33,6 @@ export interface TaskLogContext {
 export interface TaskEngineOptions {
   /** 持久化任务状态、结果和审计事件的 SQLite 门面。 */
   store: SqliteStore;
-  /** 手动、定时检测和自动任务共享的单操作协调器。 */
-  coordinator: OperationCoordinator;
   /** 发布任务生命周期及业务资源失效通知。 */
   notifier: StatusNotifier;
   /** 覆盖全部任务类型且在运行时不可变的 Handler 注册表。 */
@@ -57,12 +51,20 @@ export type TransientTaskOutcome =
       errorCode: string;
     };
 
+/** 当前占用全局执行槽的操作。 */
+type ActiveOperation =
+  { kind: 'task'; taskId: string } | { kind: 'scheduled_health' };
+
 /** 只负责任务生命周期、互斥、持久化、审计、通知和关闭的通用引擎。 */
 export class TaskEngine {
   /** 记录任务生命周期和引擎异常的统一日志器。 */
   private readonly logger: AppLogger;
   /** 当前由 HTTP 入队并在后台执行的完整任务链 Promise。 */
   private activeCompletion: Promise<void> | null = null;
+  /** 当前占用全局槽的手动、自动或定时操作。 */
+  private activeOperation: ActiveOperation | null = null;
+  /** 防止过期执行链释放后续操作的唯一令牌。 */
+  private activeToken: symbol | null = null;
   /** 服务进入关闭阶段后变为 false，阻止创建新任务。 */
   private accepting = true;
 
@@ -79,18 +81,22 @@ export class TaskEngine {
 
   /** @returns 当前占用全局槽的任务 UUID；空闲或定时检测时返回 null。 */
   getActiveTaskId() {
-    const active = this.options.coordinator.getActive();
+    const active = this.activeOperation;
     return active?.kind === 'task' ? active.taskId : null;
   }
 
   /** @returns 手动任务、自动任务或定时检测是否正在占用全局槽。 */
   hasActiveOperation() {
-    return this.options.coordinator.getActive() !== null;
+    return this.activeOperation !== null;
   }
 
   /** @returns 可安全返回给 API 客户端的当前冲突信息。 */
   getConflictDetails(): ApiErrorDetails | undefined {
-    return this.options.coordinator.getConflictDetails();
+    if (this.activeOperation?.kind === 'task')
+      return { activeTaskId: this.activeOperation.taskId };
+    if (this.activeOperation?.kind === 'scheduled_health')
+      return { activeOperation: 'scheduled_health' };
+    return undefined;
   }
 
   /**
@@ -107,7 +113,7 @@ export class TaskEngine {
     input: StoredJsonObject | null = null,
     logContext: TaskLogContext = {},
   ): StoredTask {
-    if (!this.accepting || this.options.coordinator.getActive()) {
+    if (!this.accepting || this.activeOperation) {
       this.logger.warn('task:service', 'rejected', {
         taskType: type,
         requestId: logContext.requestId,
@@ -121,8 +127,8 @@ export class TaskEngine {
       metadata: { requestId: logContext.requestId },
     };
     const task = this.createTask(submission);
-    const lease = this.options.coordinator.tryAcquireManual(task.id);
-    if (!lease) {
+    const token = this.acquire({ kind: 'task', taskId: task.id });
+    if (!token) {
       this.logger.warn('task:service', 'rejected', {
         taskType: type,
         taskId: task.id,
@@ -133,9 +139,9 @@ export class TaskEngine {
     }
     this.activeCompletion = Promise.resolve().then(async () => {
       try {
-        await this.runCreatedTask(task, submission, lease);
+        await this.runCreatedTask(task, submission, token);
       } finally {
-        lease.release();
+        this.release(token);
         this.activeCompletion = null;
       }
     });
@@ -143,29 +149,42 @@ export class TaskEngine {
   }
 
   /**
-   * 在调用方已经持有的全局租约中执行一个普通任务。
+   * 在当前执行链中创建并执行一个持久化后续任务。
    *
    * @param submission 待创建任务的声明式类型、输入和日志元数据。
-   * @param lease 当前健康检测持有且将切换到新任务 ID 的租约。
+   * @param token 当前执行链的互斥令牌。
    * @returns 任务及其后续任务实际改变的去重资源。
    */
-  private async runWithLease(
+  private async runNextTask(
     submission: TaskSubmission,
-    lease: OperationLease,
+    token: symbol,
   ): Promise<StreamResource[]> {
     if (!this.accepting) return [];
     const task = this.createTask(submission);
-    lease.replaceWithTask(task.id);
-    return await this.runCreatedTask(task, submission, lease);
+    this.replaceWithTask(token, task.id);
+    return await this.runCreatedTask(task, submission, token);
   }
 
   /**
-   * 在已有租约中执行不持久化根任务的 Handler；成功后续任务仍正常持久化。
+   * 尝试启动定时瞬时任务；成功后续任务仍正常持久化。
    */
-  async runTransientWithLease(
+  tryRunScheduledTask(
     submission: TaskSubmission,
-    lease: OperationLease,
     executionId: string,
+  ): Promise<TransientTaskOutcome> | null {
+    if (!this.accepting) return null;
+    const token = this.acquire({ kind: 'scheduled_health' });
+    if (!token) return null;
+    return this.runTransientTask(submission, executionId, token).finally(() =>
+      this.release(token),
+    );
+  }
+
+  /** 执行不持久化的根任务，成功后续任务仍正常持久化。 */
+  private async runTransientTask(
+    submission: TaskSubmission,
+    executionId: string,
+    token: symbol,
   ): Promise<TransientTaskOutcome> {
     const task: TaskExecutionIdentity = {
       id: executionId,
@@ -180,11 +199,10 @@ export class TaskEngine {
       execution = await handler.execute({
         task,
         input,
-        lease,
         logger: this.logger,
       });
     } catch (error) {
-      const failure = await this.resolveFailure(handler, task, lease, error);
+      const failure = await this.resolveFailure(handler, task, error);
       return {
         succeeded: false,
         changedResources: [...new Set(failure.changedResources)],
@@ -194,7 +212,7 @@ export class TaskEngine {
     }
     const changedResources = [...new Set(execution.changedResources)];
     for (const nextTask of execution.nextTasks ?? []) {
-      const nextTaskResources = await this.runWithLease(nextTask, lease);
+      const nextTaskResources = await this.runNextTask(nextTask, token);
       for (const resource of nextTaskResources)
         if (!changedResources.includes(resource))
           changedResources.push(resource);
@@ -217,13 +235,13 @@ export class TaskEngine {
    *
    * @param task 已持久化的 queued 任务。
    * @param submission 创建任务时使用的进程内元数据。
-   * @param lease 整条任务链共享的全局操作租约。
+   * @param token 整条任务链共享的互斥令牌。
    * @returns 当前任务链累计改变的资源。
    */
   private async runCreatedTask(
     task: StoredTask,
     submission: TaskSubmission,
-    lease: OperationLease,
+    token: symbol,
   ): Promise<StreamResource[]> {
     const handler = this.options.handlers[task.type];
     const identity: TaskExecutionIdentity = {
@@ -232,17 +250,11 @@ export class TaskEngine {
       input: task.input,
       persistence: 'persistent',
     };
-    const outcome = await this.runTask(
-      task,
-      identity,
-      handler,
-      submission,
-      lease,
-    );
+    const outcome = await this.runTask(task, identity, handler, submission);
     if (!outcome.succeeded) return outcome.changedResources;
     const resources = [...outcome.changedResources];
     for (const nextTask of outcome.execution.nextTasks ?? []) {
-      const nextTaskResources = await this.runWithLease(nextTask, lease);
+      const nextTaskResources = await this.runNextTask(nextTask, token);
       for (const resource of nextTaskResources)
         if (!resources.includes(resource)) resources.push(resource);
     }
@@ -278,7 +290,6 @@ export class TaskEngine {
    * @param task 当前任务记录。
    * @param handler 只实现当前类型业务行为的处理器。
    * @param submission 任务日志和创建通知使用的元数据。
-   * @param lease 当前任务持有的全局租约。
    * @returns 成功执行结果或失败资源摘要；异常不会逃逸破坏任务链。
    */
   private async runTask(
@@ -286,7 +297,6 @@ export class TaskEngine {
     identity: TaskExecutionIdentity,
     handler: TaskHandler,
     submission: TaskSubmission,
-    lease: OperationLease,
   ): Promise<
     | {
         succeeded: true;
@@ -310,7 +320,6 @@ export class TaskEngine {
       const execution = await handler.execute({
         task: identity,
         input,
-        lease,
         logger: this.logger,
       });
       this.options.store.completeTask(task.id, execution.result);
@@ -335,12 +344,7 @@ export class TaskEngine {
       });
       return { succeeded: true, execution, changedResources };
     } catch (error) {
-      const failure = await this.resolveFailure(
-        handler,
-        identity,
-        lease,
-        error,
-      );
+      const failure = await this.resolveFailure(handler, identity, error);
       let failedPersisted = false;
       try {
         this.options.store.failTask(
@@ -386,14 +390,12 @@ export class TaskEngine {
    *
    * @param handler 当前任务 Handler。
    * @param task 当前任务记录。
-   * @param lease 当前共享租约。
    * @param error Handler 抛出的原始异常。
    * @returns Handler 已处理结果或引擎的保守默认结果。
    */
   private async resolveFailure(
     handler: TaskHandler,
     task: TaskExecutionIdentity,
-    lease: OperationLease,
     error: unknown,
   ): Promise<TaskFailureResult> {
     if (error instanceof TaskExecutionError) return error.failure;
@@ -402,7 +404,6 @@ export class TaskEngine {
         return await handler.handleFailure({
           task,
           input: task.input ?? {},
-          lease,
           logger: this.logger,
           error,
         });
@@ -483,14 +484,36 @@ export class TaskEngine {
 
   /** @throws 始终抛出不包含本机敏感状态的统一动作冲突。 */
   private throwConflict(): never {
-    const active = this.options.coordinator.getActive();
+    const active = this.activeOperation;
     throw new ApiError(
       409,
       'ACTION_CONFLICT',
       active?.kind === 'scheduled_health'
         ? '定时健康检测正在执行'
         : '已有操作正在执行',
-      this.options.coordinator.getConflictDetails(),
+      this.getConflictDetails(),
     );
+  }
+
+  /** 尝试占用全局槽并返回当前执行链的唯一令牌。 */
+  private acquire(operation: ActiveOperation): symbol | null {
+    if (this.activeOperation) return null;
+    const token = Symbol(operation.kind);
+    this.activeOperation = operation;
+    this.activeToken = token;
+    return token;
+  }
+
+  /** 在不释放全局槽的前提下切换为持久化任务身份。 */
+  private replaceWithTask(token: symbol, taskId: string): void {
+    if (this.activeToken !== token) return;
+    this.activeOperation = { kind: 'task', taskId };
+  }
+
+  /** 仅允许当前执行链释放全局槽。 */
+  private release(token: symbol): void {
+    if (this.activeToken !== token) return;
+    this.activeOperation = null;
+    this.activeToken = null;
   }
 }

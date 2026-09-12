@@ -8,7 +8,6 @@ import type {
   StreamResource,
 } from '@clash-sentinel/shared';
 import { SqliteStore } from '../../storage/store.js';
-import { OperationCoordinator } from '../operation-coordinator.js';
 import { StatusNotificationCenter } from '../status-notifier.js';
 import type {
   HealthCheckChanges,
@@ -34,40 +33,40 @@ async function setup(
   const root = await mkdtemp(join(tmpdir(), 'clash-scheduler-'));
   const store = new SqliteStore({ databasePath: join(root, 'scheduler.db') });
   cleanups.push({ root, store });
-  const coordinator = new OperationCoordinator();
   const notifier = new StatusNotificationCenter();
   const healthCheck = { run: vi.fn(run) };
   const taskEngine = {
-    runTransientWithLease: vi.fn(async () => {
-      try {
-        const value = await healthCheck.run();
-        const resources: StreamResource[] = [];
-        if (value.changes.statusUpdated) resources.push('status');
-        if (value.changes.sitesUpdated) resources.push('sites');
-        if (value.changes.candidatesUpdated) resources.push('candidates');
-        if (value.changes.eventAppended) resources.push('events');
-        if (value.changes.settingsUpdated) resources.push('settings');
-        resources.push(...(transientResources ?? []));
-        return { succeeded: true as const, changedResources: resources };
-      } catch (error) {
-        return {
-          succeeded: false as const,
-          changedResources: [] as StreamResource[],
-          error,
-          errorCode: 'INTERNAL_ERROR',
-        };
-      }
-    }),
+    getActiveTaskId: vi.fn((): string | null => null),
+    tryRunScheduledTask: vi.fn(() =>
+      (async () => {
+        try {
+          const value = await healthCheck.run();
+          const resources: StreamResource[] = [];
+          if (value.changes.statusUpdated) resources.push('status');
+          if (value.changes.sitesUpdated) resources.push('sites');
+          if (value.changes.candidatesUpdated) resources.push('candidates');
+          if (value.changes.eventAppended) resources.push('events');
+          if (value.changes.settingsUpdated) resources.push('settings');
+          resources.push(...(transientResources ?? []));
+          return { succeeded: true as const, changedResources: resources };
+        } catch (error) {
+          return {
+            succeeded: false as const,
+            changedResources: [] as StreamResource[],
+            error,
+            errorCode: 'INTERNAL_ERROR',
+          };
+        }
+      })(),
+    ),
   };
   const scheduler = new HealthScheduler({
     store,
-    coordinator,
     notifier,
     taskEngine,
   });
   return {
     store,
-    coordinator,
     healthCheck,
     scheduler,
     notifier,
@@ -168,9 +167,10 @@ test('手动任务占槽时静默跳过，监测关闭时不执行', async () =>
   const notifications: StreamNotification[] = [];
   value.notifier.subscribe((notification) => notifications.push(notification));
   notifications.length = 0;
-  const lease = value.coordinator.tryAcquireManual(
+  value.taskEngine.getActiveTaskId.mockReturnValue(
     '550e8400-e29b-41d4-a716-446655440000',
-  )!;
+  );
+  value.taskEngine.tryRunScheduledTask.mockReturnValueOnce(null);
   value.scheduler.start();
   expect(value.healthCheck.run).not.toHaveBeenCalled();
   expect(notifications).toEqual([]);
@@ -184,7 +184,6 @@ test('手动任务占槽时静默跳过，监测关闭时不执行', async () =>
     activeTaskId: '550e8400-e29b-41d4-a716-446655440000',
   });
   await value.scheduler.stop();
-  lease.release();
 
   const disabled = await setup(async () => execution());
   disabled.store.updateSettings({ monitoringEnabled: false });
@@ -226,8 +225,8 @@ test('定时检测完成后在同一租约中执行自动切换并合并变化�
   notifications.length = 0;
   value.scheduler.start();
   await vi.advanceTimersByTimeAsync(0);
-  expect(value.taskEngine.runTransientWithLease).toHaveBeenCalledOnce();
-  expect(value.taskEngine.runTransientWithLease.mock.calls[0]?.[0]).toEqual({
+  expect(value.taskEngine.tryRunScheduledTask).toHaveBeenCalledOnce();
+  expect(value.taskEngine.tryRunScheduledTask.mock.calls[0]?.[0]).toEqual({
     type: 'health_check',
   });
   expect(notifications.at(-1)).toMatchObject({

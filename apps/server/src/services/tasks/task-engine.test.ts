@@ -10,7 +10,6 @@ import type {
   TaskType,
 } from '@clash-sentinel/shared';
 import { SqliteStore } from '../../storage/store.js';
-import { OperationCoordinator } from '../operation-coordinator.js';
 import { StatusNotificationCenter } from '../status-notifier.js';
 import type {
   TaskExecutionResult,
@@ -74,9 +73,8 @@ async function setup(handlers: TaskHandlerRegistry) {
   const notifications: StreamNotification[] = [];
   notifier.subscribe((notification) => notifications.push(notification));
   notifications.length = 0;
-  const coordinator = new OperationCoordinator();
-  const engine = new TaskEngine({ store, coordinator, notifier, handlers });
-  return { store, notifier, notifications, coordinator, engine };
+  const engine = new TaskEngine({ store, notifier, handlers });
+  return { store, notifier, notifications, engine };
 }
 
 test('使用注册 Handler 完成统一生命周期并保持结果结构', async () => {
@@ -126,7 +124,7 @@ test('声明式后续任务复用租约并经过同一个引擎', async () => {
     { type: 'auto_switch', status: 'succeeded' },
     { type: 'health_check', status: 'succeeded' },
   ]);
-  expect(value.coordinator.getActive()).toBeNull();
+  expect(value.engine.hasActiveOperation()).toBe(false);
 });
 
 test('瞬时任务执行 Handler 但不写任务、审计或生命周期通知', async () => {
@@ -138,13 +136,10 @@ test('瞬时任务执行 Handler 但不写任务、审计或生命周期通知',
   const value = await setup(
     registry({ health_check: handler('health_check', execute) }),
   );
-  const lease = value.coordinator.tryAcquireScheduled()!;
-
-  const outcome = await value.engine.runTransientWithLease(
+  const outcome = await value.engine.tryRunScheduledTask(
     { type: 'health_check' },
-    lease,
     '550e8400-e29b-41d4-a716-446655440000',
-  );
+  )!;
 
   expect(outcome).toEqual({ succeeded: true, changedResources: ['status'] });
   expect(execute).toHaveBeenCalledWith(
@@ -155,7 +150,35 @@ test('瞬时任务执行 Handler 但不写任务、审计或生命周期通知',
   expect(value.store.listTasks()).toEqual([]);
   expect(value.store.listEvents()).toEqual([]);
   expect(value.notifications).toEqual([]);
-  lease.release();
+});
+
+test('定时任务占槽时拒绝其他定时任务并在完成后释放', async () => {
+  let finish!: (value: TaskExecutionResult) => void;
+  const running = new Promise<TaskExecutionResult>((resolve) => {
+    finish = resolve;
+  });
+  const value = await setup(
+    registry({ health_check: handler('health_check', () => running) }),
+  );
+  const completion = value.engine.tryRunScheduledTask(
+    { type: 'health_check' },
+    'scheduled-1',
+  )!;
+
+  expect(value.engine.getActiveTaskId()).toBeNull();
+  expect(value.engine.getConflictDetails()).toEqual({
+    activeOperation: 'scheduled_health',
+  });
+  expect(
+    value.engine.tryRunScheduledTask({ type: 'health_check' }, 'scheduled-2'),
+  ).toBeNull();
+
+  finish({ result: {}, changedResources: [] });
+  await completion;
+  expect(value.engine.hasActiveOperation()).toBe(false);
+  await expect(
+    value.engine.tryRunScheduledTask({ type: 'health_check' }, 'scheduled-3'),
+  ).resolves.toMatchObject({ succeeded: true });
 });
 
 test('nextTasks 在同一租约中先完成子任务链再执行兄弟任务', async () => {
@@ -182,7 +205,7 @@ test('nextTasks 在同一租约中先完成子任务链再执行兄弟任务', a
   value.engine.enqueue('health_check');
   await value.engine.waitForIdle();
   expect(order).toEqual(['health_check', 'diagnose', 'auto_switch', 'reset']);
-  expect(value.coordinator.getActive()).toBeNull();
+  expect(value.engine.hasActiveOperation()).toBe(false);
 });
 
 test('瞬时任务失败时归一化错误且不执行后续持久化生命周期', async () => {
@@ -194,13 +217,10 @@ test('瞬时任务失败时归一化错误且不执行后续持久化生命周�
       }),
     }),
   );
-  const lease = value.coordinator.tryAcquireScheduled()!;
-
-  const outcome = await value.engine.runTransientWithLease(
+  const outcome = await value.engine.tryRunScheduledTask(
     { type: 'health_check' },
-    lease,
     '550e8400-e29b-41d4-a716-446655440000',
-  );
+  )!;
 
   expect(outcome).toEqual({
     succeeded: false,
@@ -211,7 +231,6 @@ test('瞬时任务失败时归一化错误且不执行后续持久化生命周�
   expect(value.store.listTasks()).toEqual([]);
   expect(value.store.listEvents()).toEqual([]);
   expect(value.notifications).toEqual([]);
-  lease.release();
 });
 
 test('瞬时根任务的后续任务继续持久化并合并资源', async () => {
@@ -220,23 +239,31 @@ test('瞬时根任务的后续任务继续持久化并合并资源', async () =>
     changedResources: ['status'],
     nextTasks: [{ type: 'auto_switch', input: { trigger: 'scheduled' } }],
   }));
-  const automatic = vi.fn(async () => ({
-    result: { status: 'changed' },
-    changedResources: ['settings'] as const,
-  }));
+  let finishAutomatic!: (value: TaskExecutionResult) => void;
+  const automatic = vi.fn(
+    () =>
+      new Promise<TaskExecutionResult>((resolve) => {
+        finishAutomatic = resolve;
+      }),
+  );
   const value = await setup(
     registry({
       health_check: handler('health_check', health),
       auto_switch: handler('auto_switch', automatic),
     }),
   );
-  const lease = value.coordinator.tryAcquireScheduled()!;
-
-  const outcome = await value.engine.runTransientWithLease(
+  const completion = value.engine.tryRunScheduledTask(
     { type: 'health_check' },
-    lease,
     '550e8400-e29b-41d4-a716-446655440000',
-  );
+  )!;
+
+  await vi.waitFor(() => expect(value.store.listTasks()).toHaveLength(1));
+  expect(value.engine.getActiveTaskId()).toBe(value.store.listTasks()[0]?.id);
+  finishAutomatic({
+    result: { status: 'changed' },
+    changedResources: ['settings'],
+  });
+  const outcome = await completion;
 
   expect(outcome).toEqual({
     succeeded: true,
@@ -245,9 +272,7 @@ test('瞬时根任务的后续任务继续持久化并合并资源', async () =>
   expect(value.store.listTasks()).toMatchObject([
     { type: 'auto_switch', status: 'succeeded' },
   ]);
-  expect(value.coordinator.getActive()).toMatchObject({ kind: 'task' });
-  lease.release();
-  expect(value.coordinator.getActive()).toBeNull();
+  expect(value.engine.hasActiveOperation()).toBe(false);
 });
 
 test('注册表错误在启动时失败，TaskEngine 不包含具体业务分派', async () => {
@@ -255,7 +280,6 @@ test('注册表错误在启动时失败，TaskEngine 不包含具体业务分派
     () =>
       new TaskEngine({
         store: {} as SqliteStore,
-        coordinator: new OperationCoordinator(),
         notifier: new StatusNotificationCenter(),
         handlers: {
           ...registry(),

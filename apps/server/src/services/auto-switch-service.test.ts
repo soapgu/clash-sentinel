@@ -9,7 +9,6 @@ import type {
 } from '@clash-sentinel/shared';
 import { LegacyAdapterError } from '../legacy/adapter.js';
 import { SqliteStore } from '../storage/store.js';
-import { OperationCoordinator } from './operation-coordinator.js';
 import { StatusNotificationCenter } from './status-notifier.js';
 import { AutoSwitchService } from './auto-switch-service.js';
 import { TaskEngine } from './tasks/task-engine.js';
@@ -105,10 +104,8 @@ async function setup(
     now: () => new Date('2026-09-11T04:01:00.000Z'),
   });
   const healthCheck = { run: vi.fn<() => Promise<HealthCheckExecution>>() };
-  const coordinator = new OperationCoordinator();
   const taskEngine = new TaskEngine({
     store,
-    coordinator,
     notifier,
     handlers: createTaskHandlerRegistry({
       store,
@@ -125,7 +122,6 @@ async function setup(
       autoSwitch: service,
     }),
   });
-  const lease = coordinator.tryAcquireScheduled()!;
   const notifications: StreamNotification[] = [];
   notifier.subscribe((item) => notifications.push(item));
   notifications.length = 0;
@@ -134,8 +130,6 @@ async function setup(
     adapter,
     service,
     taskEngine,
-    coordinator,
-    lease,
     notifications,
     runAutoSwitch: async (
       health: Pick<HealthCheckExecution, 'snapshot' | 'changes'>,
@@ -151,11 +145,10 @@ async function setup(
           reuseDiagnosis: health.changes.candidatesUpdated,
         },
       });
-      return await taskEngine.runTransientWithLease(
+      return await taskEngine.tryRunScheduledTask(
         { type: 'health_check' },
-        lease,
         parentId,
-      );
+      )!;
     },
   };
 }
@@ -188,9 +181,6 @@ test('满足条件时创建自动任务、应用最佳候选并持久化冷却',
     consecutiveFailures: 0,
     autoSwitchCooldownUntil: '2026-09-11T04:06:00.000Z',
   });
-  expect(value.coordinator.getConflictDetails()?.activeTaskId).toBe(
-    value.store.listTasks(1)[0]?.id,
-  );
 });
 
 test('无合格候选以 no_change 完成并进入冷却', async () => {

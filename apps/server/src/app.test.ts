@@ -20,7 +20,6 @@ import {
   type LegacyOperations,
 } from './services/tasks/registry.js';
 import { AutoSwitchService } from './services/auto-switch-service.js';
-import { OperationCoordinator } from './services/operation-coordinator.js';
 import { StatusNotificationCenter } from './services/status-notifier.js';
 import { SqliteStore } from './storage/store.js';
 import {
@@ -157,7 +156,6 @@ async function createSetup(
     })),
     ...overrides,
   };
-  const coordinator = new OperationCoordinator();
   const notifier = new StatusNotificationCenter(
     () => new Date('2026-09-09T04:00:00.000Z'),
     logger,
@@ -192,7 +190,6 @@ async function createSetup(
   const autoSwitch = new AutoSwitchService({ store, adapter, logger });
   const taskEngine = new TaskEngine({
     store,
-    coordinator,
     notifier,
     logger,
     handlers: createTaskHandlerRegistry({
@@ -215,7 +212,7 @@ async function createSetup(
   return {
     store,
     adapter,
-    coordinator,
+    healthCheck,
     taskEngine,
     scheduler,
     notifier,
@@ -446,7 +443,28 @@ test('站点接口动态标记过期且定时检测占槽时拒绝手动动作',
   expect(sites.body.data.sites.baidu.stale).toBe(true);
   expect(setup.store.getSiteSnapshot('baidu')).not.toHaveProperty('stale');
 
-  const lease = setup.coordinator.tryAcquireScheduled()!;
+  let finishScheduled!: () => void;
+  setup.healthCheck.run.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishScheduled = () =>
+          resolve({
+            snapshot: setup.store.getHealthSnapshot()!,
+            autoSwitchRequest: null,
+            changes: {
+              statusUpdated: false,
+              sitesUpdated: false,
+              candidatesUpdated: false,
+              eventAppended: false,
+              settingsUpdated: false,
+            },
+          });
+      }),
+  );
+  const scheduled = setup.taskEngine.tryRunScheduledTask(
+    { type: 'health_check' },
+    'scheduled-test',
+  )!;
   const conflict = await request(setup.app.callback())
     .post('/api/actions/diagnose')
     .send({});
@@ -454,7 +472,8 @@ test('站点接口动态标记过期且定时检测占槽时拒绝手动动作',
   expect(conflict.body.error.details).toEqual({
     activeOperation: 'scheduled_health',
   });
-  lease.release();
+  finishScheduled();
+  await scheduled;
 });
 
 test('事件分页返回 total 并拒绝未知或越界查询', async () => {
