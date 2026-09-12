@@ -109,7 +109,7 @@ test('声明式后续任务复用租约并经过同一个引擎', async () => {
   const manual = vi.fn(async (): Promise<TaskExecutionResult> => ({
     result: { status: 'healthy' },
     changedResources: ['status'],
-    followUps: [{ type: 'auto_switch', input: { trigger: 'manual' } }],
+    nextTasks: [{ type: 'auto_switch', input: { trigger: 'manual' } }],
   }));
   const value = await setup(
     registry({
@@ -158,6 +158,33 @@ test('瞬时任务执行 Handler 但不写任务、审计或生命周期通知',
   lease.release();
 });
 
+test('nextTasks 在同一租约中先完成子任务链再执行兄弟任务', async () => {
+  const order: TaskType[] = [];
+  const taskHandler = (
+    type: TaskType,
+    nextTasks: TaskExecutionResult['nextTasks'] = [],
+  ) =>
+    handler(type, async () => {
+      order.push(type);
+      return { result: {}, changedResources: [], nextTasks };
+    });
+  const value = await setup(
+    registry({
+      health_check: taskHandler('health_check', [
+        { type: 'diagnose' },
+        { type: 'reset' },
+      ]),
+      diagnose: taskHandler('diagnose', [{ type: 'auto_switch' }]),
+      auto_switch: taskHandler('auto_switch'),
+      reset: taskHandler('reset'),
+    }),
+  );
+  value.engine.enqueue('health_check');
+  await value.engine.waitForIdle();
+  expect(order).toEqual(['health_check', 'diagnose', 'auto_switch', 'reset']);
+  expect(value.coordinator.getActive()).toBeNull();
+});
+
 test('瞬时任务失败时归一化错误且不执行后续持久化生命周期', async () => {
   const error = new Error('瞬时失败');
   const value = await setup(
@@ -191,7 +218,7 @@ test('瞬时根任务的后续任务继续持久化并合并资源', async () =>
   const health = vi.fn(async (): Promise<TaskExecutionResult> => ({
     result: {},
     changedResources: ['status'],
-    followUps: [{ type: 'auto_switch', input: { trigger: 'scheduled' } }],
+    nextTasks: [{ type: 'auto_switch', input: { trigger: 'scheduled' } }],
   }));
   const automatic = vi.fn(async () => ({
     result: { status: 'changed' },

@@ -36,7 +36,7 @@ export interface TaskExecutionResult {
   /** 可选的审计摘要和详情；缺省时由 Handler 元数据生成。 */
   audit?: TaskAudit;
   /** 当前任务成功后在同一租约中顺序执行的声明式任务。 */
-  followUps?: TaskSubmission[];
+  nextTasks?: TaskSubmission[];
 }
 
 /** Handler 失败后交给 TaskEngine 统一持久化的安全结论。 */

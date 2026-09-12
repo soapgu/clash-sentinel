@@ -96,6 +96,7 @@ function execution(
 ): HealthCheckExecution {
   return {
     snapshot: snapshot(),
+    autoSwitchRequest: null,
     changes: {
       statusUpdated: true,
       sitesUpdated: true,

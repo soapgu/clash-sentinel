@@ -3,18 +3,19 @@ import type {
   HealthCheckChanges,
   HealthCheckService,
 } from '../health/health-check.js';
-import type { AutoSwitchPlanner } from '../auto-switch-service.js';
-import { asStoredJson, type TaskHandler } from './contracts.js';
+import {
+  asStoredJson,
+  type TaskHandler,
+  type TaskSubmission,
+} from './contracts.js';
 
-/** 创建手动健康检查任务 Handler 所需的领域端口。 */
+/** 创建健康检查任务 Handler 所需的领域端口。 */
 export interface HealthCheckTaskHandlerOptions {
   /** 执行并持久化完整健康检测的编排器。 */
   healthCheck: Pick<HealthCheckService, 'run'>;
-  /** 根据检测结果声明可选自动任务的领域规划器。 */
-  autoSwitchPlanner: AutoSwitchPlanner;
 }
 
-/** 执行手动健康检查，并声明可能需要在同一租约中运行的自动任务。 */
+/** 执行健康检查，并声明可能需要在同一租约中运行的自动任务。 */
 export class HealthCheckTaskHandler implements TaskHandler {
   /** 注册表使用的稳定任务类型。 */
   readonly type = 'health_check' as const;
@@ -29,12 +30,12 @@ export class HealthCheckTaskHandler implements TaskHandler {
   }
 
   /**
-   * @param options 健康检测编排器和自动切换规划器。
+   * @param options 健康检测编排器。
    */
   constructor(private readonly options: HealthCheckTaskHandlerOptions) {}
 
   /**
-   * 执行手动检测并保持公开任务结果为扁平 HealthSnapshot。
+   * 执行检测并保持公开任务结果为扁平 HealthSnapshot。
    *
    * @param context 当前健康检查任务上下文。
    * @returns 健康快照、精确资源变化和可选自动切换后续任务。
@@ -42,18 +43,22 @@ export class HealthCheckTaskHandler implements TaskHandler {
   async execute({ task }: Parameters<TaskHandler['execute']>[0]) {
     const source = task.persistence === 'transient' ? 'scheduled' : 'manual';
     const execution = await this.options.healthCheck.run(source, task.id);
-    const followUp = this.options.autoSwitchPlanner.prepare(
-      execution,
-      source,
-      task.id,
-    );
+    const request = execution.autoSwitchRequest;
+    const nextTask: TaskSubmission | null = request
+      ? {
+          type: 'auto_switch',
+          input: { ...request, trigger: source, parentId: task.id },
+          metadata: { trigger: source, parentId: task.id },
+          queuedResources: ['monitoring'],
+        }
+      : null;
     return {
       result: asStoredJson(execution.snapshot),
       changedResources: this.changedResources(
         execution.changes,
         task.persistence === 'persistent',
       ),
-      followUps: followUp ? [followUp] : [],
+      nextTasks: nextTask ? [nextTask] : [],
     };
   }
 

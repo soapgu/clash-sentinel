@@ -14,6 +14,7 @@ import { StatusNotificationCenter } from './status-notifier.js';
 import { AutoSwitchService } from './auto-switch-service.js';
 import { TaskEngine } from './tasks/task-engine.js';
 import { createTaskHandlerRegistry } from './tasks/registry.js';
+import type { HealthCheckExecution } from './health/health-check.js';
 
 const cleanups: Array<{ root: string; store: SqliteStore }> = [];
 
@@ -103,6 +104,7 @@ async function setup(
     adapter,
     now: () => new Date('2026-09-11T04:01:00.000Z'),
   });
+  const healthCheck = { run: vi.fn<() => Promise<HealthCheckExecution>>() };
   const coordinator = new OperationCoordinator();
   const taskEngine = new TaskEngine({
     store,
@@ -119,7 +121,7 @@ async function setup(
         resetLock: vi.fn(),
         rollback: vi.fn(),
       },
-      healthCheck: { run: vi.fn() },
+      healthCheck,
       autoSwitch: service,
     }),
   });
@@ -136,12 +138,24 @@ async function setup(
     lease,
     notifications,
     runAutoSwitch: async (
-      health: Parameters<AutoSwitchService['prepare']>[0],
-      source: Parameters<AutoSwitchService['prepare']>[1],
+      health: Pick<HealthCheckExecution, 'snapshot' | 'changes'>,
       parentId: string,
     ) => {
-      const submission = service.prepare(health, source, parentId);
-      return submission ? await taskEngine.runWithLease(submission, lease) : [];
+      if (!health.snapshot.lock.locked || !health.snapshot.profile)
+        throw new Error('测试健康快照缺少自动切换上下文');
+      healthCheck.run.mockResolvedValue({
+        ...health,
+        autoSwitchRequest: {
+          currentIp: health.snapshot.lock.ip,
+          profileUid: health.snapshot.profile.uid,
+          reuseDiagnosis: health.changes.candidatesUpdated,
+        },
+      });
+      return await taskEngine.runTransientWithLease(
+        { type: 'health_check' },
+        lease,
+        parentId,
+      );
     },
   };
 }
@@ -159,11 +173,11 @@ test('满足条件时创建自动任务、应用最佳候选并持久化冷却',
         settingsUpdated: false,
       },
     },
-    'scheduled',
     'run-1',
   );
   expect(value.adapter.diagnose).not.toHaveBeenCalled();
   expect(value.adapter.applyIp).toHaveBeenCalledWith('198.51.100.21');
+  expect(value.store.listTasks()).toHaveLength(1);
   expect(value.store.listTasks(1)[0]).toMatchObject({
     type: 'auto_switch',
     status: 'succeeded',
@@ -192,7 +206,6 @@ test('无合格候选以 no_change 完成并进入冷却', async () => {
         settingsUpdated: false,
       },
     },
-    'manual',
     'health-task',
   );
   expect(value.adapter.diagnose).toHaveBeenCalledOnce();
@@ -225,7 +238,6 @@ test('失败已恢复时保留自动开关并进入冷却', async () => {
         settingsUpdated: false,
       },
     },
-    'scheduled',
     'run-2',
   );
   expect(value.store.listTasks(1)[0]).toMatchObject({
@@ -238,7 +250,7 @@ test('失败已恢复时保留自动开关并进入冷却', async () => {
   );
 });
 
-test('恢复失败时关闭自动切换且冷却期阻止创建任务', async () => {
+test('恢复失败时关闭自动切换', async () => {
   const value = await setup({
     diagnosis: diagnosis(),
     applyError: new LegacyAdapterError(
@@ -259,7 +271,6 @@ test('恢复失败时关闭自动切换且冷却期阻止创建任务', async ()
         settingsUpdated: false,
       },
     },
-    'scheduled',
     'run-3',
   );
   expect(value.store.getSettings()).toMatchObject({
@@ -270,25 +281,4 @@ test('恢复失败时关闭自动切换且冷却期阻止创建任务', async ()
     status: 'failed',
     recoveryStatus: 'recovery_failed',
   });
-
-  const cooling = await setup();
-  cooling.store.upsertHealthSnapshot({
-    ...snapshot(),
-    autoSwitchCooldownUntil: '2026-09-11T04:02:00.000Z',
-  });
-  await cooling.runAutoSwitch(
-    {
-      snapshot: cooling.store.getHealthSnapshot()!,
-      changes: {
-        statusUpdated: true,
-        sitesUpdated: true,
-        candidatesUpdated: false,
-        eventAppended: false,
-        settingsUpdated: false,
-      },
-    },
-    'scheduled',
-    'run-4',
-  );
-  expect(cooling.store.listTasks()).toHaveLength(0);
 });

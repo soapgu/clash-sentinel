@@ -1,9 +1,6 @@
 import type { LegacyAdapter } from '../../legacy/adapter.js';
 import type { SqliteStore } from '../../storage/store.js';
-import type {
-  AutoSwitchPlanner,
-  AutoSwitchService,
-} from '../auto-switch-service.js';
+import type { AutoSwitchService } from '../auto-switch-service.js';
 import type { HealthCheckService } from '../health/health-check.js';
 import { ApplyTaskHandler } from './apply-task-handler.js';
 import { AutoSwitchTaskHandler } from './auto-switch-task-handler.js';
@@ -37,11 +34,10 @@ export interface TaskHandlerDependencies {
   /** 手动健康任务调用的完整健康编排器。 */
   healthCheck: Pick<HealthCheckService, 'run'>;
   /** 自动切换 Handler 使用的上下文恢复、执行和保护能力。 */
-  autoSwitch: AutoSwitchPlanner &
-    Pick<
-      AutoSwitchService,
-      'restorePlan' | 'execute' | 'handleFailure' | 'handleInvalidContext'
-    >;
+  autoSwitch: Pick<
+    AutoSwitchService,
+    'restorePlan' | 'execute' | 'handleFailure' | 'handleInvalidContext'
+  >;
 }
 
 /**
@@ -56,7 +52,6 @@ export function createTaskHandlerRegistry(
   return {
     health_check: new HealthCheckTaskHandler({
       healthCheck: dependencies.healthCheck,
-      autoSwitchPlanner: dependencies.autoSwitch,
     }),
     diagnose: new DiagnoseTaskHandler(dependencies.store, dependencies.adapter),
     apply: new ApplyTaskHandler(dependencies.store, dependencies.adapter),

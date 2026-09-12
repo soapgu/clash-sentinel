@@ -149,7 +149,7 @@ export class TaskEngine {
    * @param lease 当前健康检测持有且将切换到新任务 ID 的租约。
    * @returns 任务及其后续任务实际改变的去重资源。
    */
-  async runWithLease(
+  private async runWithLease(
     submission: TaskSubmission,
     lease: OperationLease,
   ): Promise<StreamResource[]> {
@@ -193,9 +193,9 @@ export class TaskEngine {
       };
     }
     const changedResources = [...new Set(execution.changedResources)];
-    for (const followUp of execution.followUps ?? []) {
-      const followUpResources = await this.runWithLease(followUp, lease);
-      for (const resource of followUpResources)
+    for (const nextTask of execution.nextTasks ?? []) {
+      const nextTaskResources = await this.runWithLease(nextTask, lease);
+      for (const resource of nextTaskResources)
         if (!changedResources.includes(resource))
           changedResources.push(resource);
     }
@@ -241,9 +241,9 @@ export class TaskEngine {
     );
     if (!outcome.succeeded) return outcome.changedResources;
     const resources = [...outcome.changedResources];
-    for (const followUp of outcome.execution.followUps ?? []) {
-      const followUpResources = await this.runWithLease(followUp, lease);
-      for (const resource of followUpResources)
+    for (const nextTask of outcome.execution.nextTasks ?? []) {
+      const nextTaskResources = await this.runWithLease(nextTask, lease);
+      for (const resource of nextTaskResources)
         if (!resources.includes(resource)) resources.push(resource);
     }
     return resources;

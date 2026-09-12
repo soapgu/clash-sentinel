@@ -55,10 +55,18 @@ export interface HealthCheckChanges {
   settingsUpdated: boolean;
 }
 
+/** 健康检测产生的自动切换业务请求，不包含任务系统元数据。 */
+export interface AutoSwitchRequest {
+  currentIp: string;
+  profileUid: string;
+  reuseDiagnosis: boolean;
+}
+
 /** 健康快照和仅供服务端通知层使用的执行摘要。 */
 export interface HealthCheckExecution {
   snapshot: HealthSnapshot;
   changes: HealthCheckChanges;
+  autoSwitchRequest: AutoSwitchRequest | null;
 }
 
 /** 编排六站探测、入口判断、诊断持久化和综合快照。 */
@@ -247,7 +255,36 @@ export class HealthCheckService {
       durationMs: Date.now() - startedAt,
       changedResources,
     });
-    return { snapshot: saved, changes };
+    return {
+      snapshot: saved,
+      changes,
+      autoSwitchRequest: this.prepareAutoSwitch(saved, changes),
+    };
+  }
+
+  /** 根据最新设置和最终健康快照决定是否建议自动切换。 */
+  private prepareAutoSwitch(
+    snapshot: HealthSnapshot,
+    changes: HealthCheckChanges,
+  ): AutoSwitchRequest | null {
+    const settings = this.options.store.getSettings();
+    if (
+      !settings.autoSwitchEnabled ||
+      !snapshot.profile ||
+      settings.autoSwitchProfileUid !== snapshot.profile.uid ||
+      snapshot.status !== 'entry_down' ||
+      (snapshot.internetSuccess ?? 0) < 2 ||
+      snapshot.consecutiveFailures < settings.entryFailureThreshold ||
+      (snapshot.autoSwitchCooldownUntil !== null &&
+        Date.parse(snapshot.autoSwitchCooldownUntil) > this.now().getTime()) ||
+      !snapshot.lock.locked
+    )
+      return null;
+    return {
+      currentIp: snapshot.lock.ip,
+      profileUid: snapshot.profile.uid,
+      reuseDiagnosis: changes.candidatesUpdated,
+    };
   }
 
   /** 从合格候选中稳定选择一个不同于当前锁定地址的最快 IP。 */

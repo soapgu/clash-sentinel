@@ -296,6 +296,7 @@ test('订阅 UID 变化清空诊断和失败计数并关闭自动切换', async 
     autoSwitchEnabled: false,
     autoSwitchProfileUid: null,
   });
+  expect(execution.autoSwitchRequest).toBeNull();
 });
 
 test('同一 UID 文件指纹变化废弃诊断但保留自动开关', async () => {
@@ -324,4 +325,107 @@ test('同一 UID 文件指纹变化废弃诊断但保留自动开关', async () 
   });
   expect(value.store.getDiagnosis()).toBeNull();
   expect(value.store.getSettings().autoSwitchEnabled).toBe(true);
+});
+
+/** 构造达到失败阈值且启用自动切换的一轮健康检测。 */
+async function autoSwitchSetup() {
+  const value = await setup();
+  value.store.updateSettings({
+    autoSwitchEnabled: true,
+    autoSwitchProfileUid: 'profile-demo',
+    entryFailureThreshold: 3,
+  });
+  const legacyHealth = await value.legacy.healthCheck();
+  value.legacy.healthCheck.mockResolvedValue({
+    ...legacyHealth,
+    status: 'entry_down',
+    consecutiveFailures: 3,
+  });
+  value.legacy.healthCheck.mockClear();
+  return value;
+}
+
+test('首次入口故障返回可复用本轮诊断的自动切换请求', async () => {
+  const value = await autoSwitchSetup();
+  const execution = await value.service.run('scheduled');
+  expect(execution.autoSwitchRequest).toEqual({
+    currentIp: '198.51.100.20',
+    profileUid: 'profile-demo',
+    reuseDiagnosis: true,
+  });
+  expect(value.legacy.diagnose).toHaveBeenCalledOnce();
+  const next = await value.service.run('scheduled');
+  expect(next.autoSwitchRequest).toMatchObject({ reuseDiagnosis: false });
+  expect(value.legacy.diagnose).toHaveBeenCalledOnce();
+});
+
+for (const [name, patch] of [
+  ['自动开关关闭', { autoSwitchEnabled: false }],
+  ['订阅不匹配', { autoSwitchProfileUid: 'profile-other' }],
+  ['阈值尚未达到', { entryFailureThreshold: 4 }],
+] as const) {
+  test(`${name}时不返回自动切换请求`, async () => {
+    const value = await autoSwitchSetup();
+    value.store.updateSettings(patch);
+    expect((await value.service.run('scheduled')).autoSwitchRequest).toBeNull();
+  });
+}
+
+for (const [name, outcomes, statusOverrides] of [
+  ['未锁定 IP', {}, { lock: { locked: false } }],
+  ['无当前订阅', {}, { profile: null }],
+  [
+    '国内网络不确定',
+    {
+      taobao: result('taobao', false),
+      tencent: result('tencent', false),
+    },
+    {},
+  ],
+] as const) {
+  test(`${name}时不返回自动切换请求`, async () => {
+    const value = await setup(outcomes, statusOverrides);
+    value.store.updateSettings({
+      autoSwitchEnabled: true,
+      autoSwitchProfileUid: 'profile-demo',
+    });
+    expect((await value.service.run('scheduled')).autoSwitchRequest).toBeNull();
+  });
+}
+
+test('健康状态正常时不返回自动切换请求', async () => {
+  const value = await setup();
+  value.store.updateSettings({
+    autoSwitchEnabled: true,
+    autoSwitchProfileUid: 'profile-demo',
+  });
+  expect((await value.service.run('manual')).autoSwitchRequest).toBeNull();
+});
+
+for (const [until, blocked] of [
+  ['2026-09-09T04:00:01.001Z', true],
+  ['2026-09-09T04:00:01.000Z', false],
+  ['2026-09-09T04:00:00.999Z', false],
+] as const) {
+  test(`冷却到期时间 ${until} 的触发边界`, async () => {
+    const value = await autoSwitchSetup();
+    const execution = await value.service.run('scheduled');
+    value.store.upsertHealthSnapshot({
+      ...execution.snapshot,
+      autoSwitchCooldownUntil: until,
+    });
+    const next = await value.service.run('scheduled');
+    if (blocked) expect(next.autoSwitchRequest).toBeNull();
+    else
+      expect(next.autoSwitchRequest).toMatchObject({ reuseDiagnosis: false });
+  });
+}
+
+test('检测期间更新设置后采用最新自动切换开关', async () => {
+  const value = await autoSwitchSetup();
+  value.legacy.diagnose.mockImplementation(async () => {
+    value.store.updateSettings({ autoSwitchEnabled: false });
+    return diagnosis();
+  });
+  expect((await value.service.run('scheduled')).autoSwitchRequest).toBeNull();
 });

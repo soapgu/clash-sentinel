@@ -178,11 +178,13 @@ async function createSetup(
       });
       return {
         snapshot,
+        autoSwitchRequest: null,
         changes: {
           statusUpdated: true,
           sitesUpdated: true,
           candidatesUpdated: false,
           eventAppended: false,
+          settingsUpdated: false,
         },
       };
     }),

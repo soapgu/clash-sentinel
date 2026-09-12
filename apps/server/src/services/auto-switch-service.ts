@@ -9,29 +9,10 @@ import type {
 import { LegacyAdapterError, type LegacyAdapter } from '../legacy/adapter.js';
 import { noopLogger, type AppLogger } from '../logging.js';
 import type { SqliteStore } from '../storage/store.js';
-import type {
-  HealthCheckExecution,
-  HealthCheckSource,
-} from './health/health-check.js';
-import type { TaskSubmission } from './tasks/contracts.js';
+import type { HealthCheckSource } from './health/health-check.js';
 
 /** 自动切换服务允许调用的最小 Legacy 诊断和应用能力。 */
 type AutoSwitchLegacyOperations = Pick<LegacyAdapter, 'diagnose' | 'applyIp'>;
-
-/** 根据刚完成的健康检查声明可选自动切换任务的领域端口。 */
-export interface AutoSwitchPlanner {
-  /**
-   * @param health 已落库的健康快照及本轮变化摘要。
-   * @param source 手动或定时检测来源。
-   * @param parentId 健康任务 ID 或调度 runId。
-   * @returns 满足触发条件时返回任务声明，否则返回 null。
-   */
-  prepare(
-    health: HealthCheckExecution,
-    source: HealthCheckSource,
-    parentId: string,
-  ): TaskSubmission | null;
-}
 
 /** 自动切换领域服务的构造依赖。 */
 export interface AutoSwitchServiceOptions {
@@ -96,7 +77,7 @@ export interface AutoSwitchFailureHandling {
 }
 
 /** 在健康轮次持有的全局租约内执行自动诊断、切换、冷却和故障保护。 */
-export class AutoSwitchService implements AutoSwitchPlanner {
+export class AutoSwitchService {
   /** 统一生成冷却截止时间的可注入时钟。 */
   private readonly now: () => Date;
   /** 自动处理领域日志器。 */
@@ -106,47 +87,6 @@ export class AutoSwitchService implements AutoSwitchPlanner {
   constructor(private readonly options: AutoSwitchServiceOptions) {
     this.now = options.now ?? (() => new Date());
     this.logger = options.logger ?? noopLogger;
-  }
-
-  /**
-   * 根据刚完成的健康检查决定是否创建 auto_switch 任务声明。
-   *
-   * @param health 已落库的健康快照及本轮变化摘要。
-   * @param source 手动或定时检测来源。
-   * @param parentId 健康任务 ID 或调度 runId。
-   * @returns 满足全部前置条件时返回可持久化任务，否则返回 null。
-   */
-  prepare(
-    health: HealthCheckExecution,
-    source: HealthCheckSource,
-    parentId: string,
-  ): TaskSubmission | null {
-    const settings = this.options.store.getSettings();
-    const snapshot = health.snapshot;
-    if (
-      !settings.autoSwitchEnabled ||
-      !snapshot.profile ||
-      settings.autoSwitchProfileUid !== snapshot.profile.uid ||
-      snapshot.status !== 'entry_down' ||
-      (snapshot.internetSuccess ?? 0) < 2 ||
-      snapshot.consecutiveFailures < settings.entryFailureThreshold ||
-      (snapshot.autoSwitchCooldownUntil !== null &&
-        Date.parse(snapshot.autoSwitchCooldownUntil) > this.now().getTime())
-    )
-      return null;
-    if (!snapshot.lock.locked) return null;
-    return {
-      type: 'auto_switch',
-      input: {
-        trigger: source,
-        parentId,
-        currentIp: snapshot.lock.ip,
-        profileUid: snapshot.profile.uid,
-        reuseDiagnosis: health.changes.candidatesUpdated,
-      },
-      metadata: { trigger: source, parentId },
-      queuedResources: ['monitoring'],
-    };
   }
 
   /**
