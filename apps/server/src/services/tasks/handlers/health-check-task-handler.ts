@@ -2,12 +2,12 @@ import type { StreamResource } from '@clash-sentinel/shared';
 import type {
   HealthCheckChanges,
   HealthCheckService,
-} from '../health/health-check.js';
+} from '../../health/health-check.js';
 import {
   asStoredJson,
   type TaskHandler,
   type TaskSubmission,
-} from './contracts.js';
+} from '../contracts.js';
 
 /** 创建健康检查任务 Handler 所需的领域端口。 */
 export interface HealthCheckTaskHandlerOptions {

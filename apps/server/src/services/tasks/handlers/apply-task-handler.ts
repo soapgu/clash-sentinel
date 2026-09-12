@@ -1,11 +1,10 @@
-import type { SqliteStore } from '../../storage/store.js';
-import { asStoredJson, type TaskHandler } from './contracts.js';
+import type { SqliteStore } from '../../../storage/store.js';
+import { asStoredJson, type TaskHandler } from '../contracts.js';
+import { legacyFailure } from '../legacy-task-failure.js';
 import {
-  legacyFailure,
-  refreshIdentity,
-  stringInput,
+  refreshHealthSnapshotAfterConfiguration,
   type ConfigurationOperations,
-} from './handler-helpers.js';
+} from './configuration-task-support.js';
 
 /** 执行候选 IP 应用，并在成功后刷新权威入口身份快照。 */
 export class ApplyTaskHandler implements TaskHandler {
@@ -24,7 +23,10 @@ export class ApplyTaskHandler implements TaskHandler {
    * @throws 缺少目标 IP 时拒绝执行。
    */
   parseInput(input: Parameters<TaskHandler['parseInput']>[0]) {
-    return { ip: stringInput(input, 'ip') };
+    const ip = input?.ip;
+    if (typeof ip !== 'string' || ip.length === 0)
+      throw new Error('任务输入缺少 ip');
+    return { ip };
   }
 
   /**
@@ -50,7 +52,7 @@ export class ApplyTaskHandler implements TaskHandler {
     input,
     logger,
   }: Parameters<TaskHandler['execute']>[0]) {
-    const ip = stringInput(input, 'ip');
+    const ip = input.ip as string;
     const startedAt = Date.now();
     logger.info('task:service', 'apply started', {
       taskId: task.id,
@@ -58,7 +60,11 @@ export class ApplyTaskHandler implements TaskHandler {
     });
     try {
       const result = await this.adapter.applyIp(ip);
-      await refreshIdentity(this.store, this.adapter, false);
+      await refreshHealthSnapshotAfterConfiguration(
+        this.store,
+        this.adapter,
+        false,
+      );
       logger.info('task:service', 'apply succeeded', {
         taskId: task.id,
         durationMs: Date.now() - startedAt,

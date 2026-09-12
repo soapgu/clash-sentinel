@@ -2,13 +2,13 @@ import type { LegacyAdapter } from '../../legacy/adapter.js';
 import type { SqliteStore } from '../../storage/store.js';
 import type { AutoSwitchService } from '../auto-switch-service.js';
 import type { HealthCheckService } from '../health/health-check.js';
-import { ApplyTaskHandler } from './apply-task-handler.js';
-import { AutoSwitchTaskHandler } from './auto-switch-task-handler.js';
+import { ApplyTaskHandler } from './handlers/apply-task-handler.js';
+import { AutoSwitchTaskHandler } from './handlers/auto-switch-task-handler.js';
 import type { TaskHandlerRegistry } from './contracts.js';
-import { DiagnoseTaskHandler } from './diagnose-task-handler.js';
-import { HealthCheckTaskHandler } from './health-check-task-handler.js';
-import { ResetTaskHandler } from './reset-task-handler.js';
-import { RollbackTaskHandler } from './rollback-task-handler.js';
+import { DiagnoseTaskHandler } from './handlers/diagnose-task-handler.js';
+import { HealthCheckTaskHandler } from './handlers/health-check-task-handler.js';
+import { ResetTaskHandler } from './handlers/reset-task-handler.js';
+import { RollbackTaskHandler } from './handlers/rollback-task-handler.js';
 
 /** 六个任务 Handler 装配时共用的最小 Legacy 能力集合。 */
 export type LegacyOperations = Pick<

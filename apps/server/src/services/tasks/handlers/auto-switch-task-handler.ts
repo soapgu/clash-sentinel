@@ -1,6 +1,6 @@
-import type { AutoSwitchService } from '../auto-switch-service.js';
-import { TaskExecutionError, type TaskHandler } from './contracts.js';
-import { legacyFailure } from './handler-helpers.js';
+import type { AutoSwitchService } from '../../auto-switch-service.js';
+import { TaskExecutionError, type TaskHandler } from '../contracts.js';
+import { legacyFailure } from '../legacy-task-failure.js';
 
 /** 从持久化上下文恢复并执行自动切换领域流程。 */
 export class AutoSwitchTaskHandler implements TaskHandler {

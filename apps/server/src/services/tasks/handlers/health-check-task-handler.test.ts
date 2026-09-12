@@ -2,10 +2,10 @@ import { expect, test, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import type { HealthSnapshot } from '@clash-sentinel/shared';
-import { noopLogger } from '../../logging.js';
+import { noopLogger } from '../../../logging.js';
 import { HealthCheckTaskHandler } from './health-check-task-handler.js';
-import type { TaskExecutionIdentity } from './contracts.js';
-import type { HealthCheckExecution } from '../health/health-check.js';
+import type { TaskExecutionIdentity } from '../contracts.js';
+import type { HealthCheckExecution } from '../../health/health-check.js';
 
 function snapshot(): HealthSnapshot {
   return {
@@ -98,7 +98,7 @@ test('健康服务未建议自动切换时不生成下一任务', async () => {
 
 test('健康服务与健康 Handler 不依赖自动切换规划端口', async () => {
   const healthSource = await readFile(
-    fileURLToPath(new URL('../health/health-check.ts', import.meta.url)),
+    fileURLToPath(new URL('../../health/health-check.ts', import.meta.url)),
     'utf8',
   );
   const handlerSource = await readFile(

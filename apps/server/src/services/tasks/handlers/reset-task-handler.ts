@@ -1,10 +1,10 @@
-import type { SqliteStore } from '../../storage/store.js';
-import { asStoredJson, type TaskHandler } from './contracts.js';
+import type { SqliteStore } from '../../../storage/store.js';
+import { asStoredJson, type TaskHandler } from '../contracts.js';
+import { legacyFailure } from '../legacy-task-failure.js';
 import {
-  legacyFailure,
-  refreshIdentity,
+  refreshHealthSnapshotAfterConfiguration,
   type ConfigurationOperations,
-} from './handler-helpers.js';
+} from './configuration-task-support.js';
 
 /** 解除入口锁定，并同步关闭与旧锁定绑定的自动切换设置。 */
 export class ResetTaskHandler implements TaskHandler {
@@ -42,7 +42,11 @@ export class ResetTaskHandler implements TaskHandler {
     logger.info('task:service', 'reset started', { taskId: task.id });
     try {
       const result = await this.adapter.resetLock();
-      await refreshIdentity(this.store, this.adapter, true);
+      await refreshHealthSnapshotAfterConfiguration(
+        this.store,
+        this.adapter,
+        true,
+      );
       this.store.updateSettings({
         autoSwitchEnabled: false,
         autoSwitchProfileUid: null,

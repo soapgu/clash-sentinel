@@ -1,10 +1,10 @@
-import type { SqliteStore } from '../../storage/store.js';
-import { asStoredJson, type TaskHandler } from './contracts.js';
+import type { SqliteStore } from '../../../storage/store.js';
+import { asStoredJson, type TaskHandler } from '../contracts.js';
+import { legacyFailure } from '../legacy-task-failure.js';
 import {
-  legacyFailure,
-  refreshIdentity,
+  refreshHealthSnapshotAfterConfiguration,
   type ConfigurationOperations,
-} from './handler-helpers.js';
+} from './configuration-task-support.js';
 
 /** 回滚最近一次受管配置，并在成功后刷新权威入口身份。 */
 export class RollbackTaskHandler implements TaskHandler {
@@ -38,7 +38,11 @@ export class RollbackTaskHandler implements TaskHandler {
     logger.info('task:service', 'rollback started', { taskId: task.id });
     try {
       const result = await this.adapter.rollback();
-      await refreshIdentity(this.store, this.adapter, false);
+      await refreshHealthSnapshotAfterConfiguration(
+        this.store,
+        this.adapter,
+        false,
+      );
       logger.info('task:service', 'rollback succeeded', {
         taskId: task.id,
         durationMs: Date.now() - startedAt,

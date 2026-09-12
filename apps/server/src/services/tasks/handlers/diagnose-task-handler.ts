@@ -1,7 +1,7 @@
-import type { LegacyAdapter } from '../../legacy/adapter.js';
-import type { SqliteStore } from '../../storage/store.js';
-import { asStoredJson, type TaskHandler } from './contracts.js';
-import { legacyFailure } from './handler-helpers.js';
+import type { LegacyAdapter } from '../../../legacy/adapter.js';
+import type { SqliteStore } from '../../../storage/store.js';
+import { asStoredJson, type TaskHandler } from '../contracts.js';
+import { legacyFailure } from '../legacy-task-failure.js';
 
 /** 执行严格诊断并用最新结果原子替换持久化候选报告。 */
 export class DiagnoseTaskHandler implements TaskHandler {
