@@ -5,12 +5,15 @@ import type {
   StreamResource,
   TaskRecoveryStatus,
 } from '@clash-sentinel/shared';
-import { LegacyAdapterError, type LegacyAdapter } from '../legacy/adapter.js';
-import { noopLogger, type AppLogger } from '../logging.js';
-import type { DiagnosisRepository } from '../storage/diagnosis-repository.js';
-import type { HealthRepository } from '../storage/health-repository.js';
-import type { SettingsRepository } from '../storage/settings-repository.js';
-import type { HealthCheckSource } from './health/health-check.js';
+import {
+  LegacyAdapterError,
+  type LegacyAdapter,
+} from '../../legacy/adapter.js';
+import { noopLogger, type AppLogger } from '../../logging.js';
+import type { DiagnosisRepository } from '../../storage/diagnosis-repository.js';
+import type { HealthRepository } from '../../storage/health-repository.js';
+import type { SettingsRepository } from '../../storage/settings-repository.js';
+import type { HealthCheckSource } from '../health/health-check.js';
 import {
   canAutoSwitch,
   selectAutoSwitchCandidate,

@@ -2,7 +2,7 @@ import type { LegacyAdapter } from '../../legacy/adapter.js';
 import type { DiagnosisRepository } from '../../storage/diagnosis-repository.js';
 import type { HealthRepository } from '../../storage/health-repository.js';
 import type { SettingsRepository } from '../../storage/settings-repository.js';
-import type { AutoSwitchService } from '../auto-switch-service.js';
+import type { AutoSwitchService } from '../auto-switch/auto-switch-service.js';
 import type { HealthCheckService } from '../health/health-check.js';
 import { ApplyTaskHandler } from './handlers/apply-task-handler.js';
 import { AutoSwitchTaskHandler } from './handlers/auto-switch-task-handler.js';

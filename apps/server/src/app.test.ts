@@ -19,7 +19,7 @@ import {
   createTaskHandlerRegistry,
   type LegacyOperations,
 } from './services/tasks/registry.js';
-import { AutoSwitchService } from './services/auto-switch-service.js';
+import { AutoSwitchService } from './services/auto-switch/auto-switch-service.js';
 import { StatusNotificationCenter } from './services/status-notifier.js';
 import { SqliteStore } from './storage/store.js';
 import {

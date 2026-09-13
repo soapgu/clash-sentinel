@@ -1,4 +1,4 @@
-import type { AutoSwitchService } from '../../auto-switch-service.js';
+import type { AutoSwitchService } from '../../auto-switch/auto-switch-service.js';
 import { TaskExecutionError, type TaskHandler } from '../contracts.js';
 import { legacyFailure } from '../legacy-task-failure.js';
 

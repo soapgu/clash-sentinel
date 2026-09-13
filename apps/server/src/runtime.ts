@@ -10,7 +10,7 @@ import { createTaskHandlerRegistry } from './services/tasks/registry.js';
 import { SqliteStore } from './storage/store.js';
 import { createAppLogger, type AppLogger } from './logging.js';
 import { loadServerConfig, type ServerConfig } from './config.js';
-import { AutoSwitchService } from './services/auto-switch-service.js';
+import { AutoSwitchService } from './services/auto-switch/auto-switch-service.js';
 import { recoverRuntimeState } from './services/startup-recovery.js';
 
 /** 生产 Koa 应用和退出流程共同持有的运行时依赖。 */

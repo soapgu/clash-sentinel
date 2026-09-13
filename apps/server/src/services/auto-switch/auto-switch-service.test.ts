@@ -7,13 +7,13 @@ import type {
   HealthSnapshot,
   StreamNotification,
 } from '@clash-sentinel/shared';
-import { LegacyAdapterError } from '../legacy/adapter.js';
-import { SqliteStore } from '../storage/store.js';
-import { StatusNotificationCenter } from './status-notifier.js';
+import { LegacyAdapterError } from '../../legacy/adapter.js';
+import { SqliteStore } from '../../storage/store.js';
+import { StatusNotificationCenter } from '../status-notifier.js';
 import { AutoSwitchService } from './auto-switch-service.js';
-import { TaskEngine } from './tasks/task-engine.js';
-import { createTaskHandlerRegistry } from './tasks/registry.js';
-import type { HealthCheckExecution } from './health/health-check.js';
+import { TaskEngine } from '../tasks/task-engine.js';
+import { createTaskHandlerRegistry } from '../tasks/registry.js';
+import type { HealthCheckExecution } from '../health/health-check.js';
 
 const cleanups: Array<{ root: string; store: SqliteStore }> = [];
 

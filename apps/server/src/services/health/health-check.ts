@@ -17,7 +17,7 @@ import { noopLogger, type AppLogger } from '../../logging.js';
 import {
   canAutoSwitch,
   selectAutoSwitchCandidate,
-} from '../auto-switch-policy.js';
+} from '../auto-switch/auto-switch-policy.js';
 
 /** 服务端固定且不可由 API 覆盖的六个健康探测目标。 */
 export const HEALTH_TARGETS = {

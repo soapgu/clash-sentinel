@@ -1,6 +1,6 @@
 import type { EventRepository } from '../storage/event-repository.js';
 import type { TaskRepository } from '../storage/task-repository.js';
-import type { AutoSwitchService } from './auto-switch-service.js';
+import type { AutoSwitchService } from './auto-switch/auto-switch-service.js';
 
 /** 启动恢复需要的同步存储和自动切换安全策略。 */
 export interface StartupRecoveryOptions {
