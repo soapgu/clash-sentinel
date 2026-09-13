@@ -1,4 +1,4 @@
-import type { SqliteStore } from '../../../storage/store.js';
+import type { HealthRepository } from '../../../storage/health-repository.js';
 import { asStoredJson, type TaskHandler } from '../contracts.js';
 import { legacyFailure } from '../legacy-task-failure.js';
 import {
@@ -25,7 +25,10 @@ export class RollbackTaskHandler implements TaskHandler {
    * @param adapter 回滚和状态读取能力。
    */
   constructor(
-    private readonly store: SqliteStore,
+    private readonly store: Pick<
+      HealthRepository,
+      'getHealthSnapshot' | 'upsertHealthSnapshot'
+    >,
     private readonly adapter: Pick<
       ConfigurationOperations,
       'rollback' | 'getStatus'

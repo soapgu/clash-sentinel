@@ -11,6 +11,7 @@ import { SqliteStore } from './storage/store.js';
 import { createAppLogger, type AppLogger } from './logging.js';
 import { loadServerConfig, type ServerConfig } from './config.js';
 import { AutoSwitchService } from './services/auto-switch-service.js';
+import { recoverRuntimeState } from './services/startup-recovery.js';
 
 /** 生产 Koa 应用和退出流程共同持有的运行时依赖。 */
 export interface RuntimeDependencies {
@@ -59,6 +60,19 @@ export function createRuntimeDependencies(
     environment,
     logger,
   });
+  const autoSwitch = new AutoSwitchService({
+    store,
+    adapter,
+    logger,
+  });
+  let recoveredTasks: number;
+  try {
+    recoveredTasks = recoverRuntimeState({ store, autoSwitch });
+  } catch (error) {
+    store.close();
+    throw error;
+  }
+  logger.info('storage:sqlite', 'runtime state recovered', { recoveredTasks });
   const notifier = new StatusNotificationCenter(() => new Date(), logger);
   const siteProbe = new UndiciSiteProbe();
   const healthCheck = new HealthCheckService({
@@ -66,11 +80,6 @@ export function createRuntimeDependencies(
     siteProbe,
     proxyConfig: new ClashProxyConfig(paths.runtimeConfigPath),
     legacy: adapter,
-    logger,
-  });
-  const autoSwitch = new AutoSwitchService({
-    store,
-    adapter,
     logger,
   });
   const handlers = createTaskHandlerRegistry({

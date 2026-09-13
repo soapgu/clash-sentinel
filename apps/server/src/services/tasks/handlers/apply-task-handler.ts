@@ -1,4 +1,4 @@
-import type { SqliteStore } from '../../../storage/store.js';
+import type { HealthRepository } from '../../../storage/health-repository.js';
 import { asStoredJson, type TaskHandler } from '../contracts.js';
 import { legacyFailure } from '../legacy-task-failure.js';
 import {
@@ -34,7 +34,10 @@ export class ApplyTaskHandler implements TaskHandler {
    * @param adapter 应用配置及读取状态的 Legacy 能力。
    */
   constructor(
-    private readonly store: SqliteStore,
+    private readonly store: Pick<
+      HealthRepository,
+      'getHealthSnapshot' | 'upsertHealthSnapshot'
+    >,
     private readonly adapter: Pick<
       ConfigurationOperations,
       'applyIp' | 'getStatus'

@@ -21,7 +21,12 @@ import {
   type StreamNotification,
 } from '@clash-sentinel/shared';
 import type { HealthScheduler } from '../services/health/health-scheduler.js';
-import type { SqliteStore } from '../storage/store.js';
+import type { DiagnosisRepository } from '../storage/diagnosis-repository.js';
+import type { EventRepository } from '../storage/event-repository.js';
+import type { HealthRepository } from '../storage/health-repository.js';
+import type { SettingsRepository } from '../storage/settings-repository.js';
+import type { SiteRepository } from '../storage/site-repository.js';
+import type { TaskRepository } from '../storage/task-repository.js';
 import type { TaskEngine } from '../services/tasks/task-engine.js';
 import type { StatusNotificationCenter } from '../services/status-notifier.js';
 import { ApiError } from './errors.js';
@@ -30,7 +35,14 @@ import { noopLogger, type AppLogger } from '../logging.js';
 /** API 路由访问持久化数据和异步任务服务所需的依赖。 */
 export interface ApiRouterOptions {
   /** SQLite 数据访问门面。 */
-  store: SqliteStore;
+  store: {
+    settings: Pick<SettingsRepository, 'getSettings' | 'updateSettings'>;
+    health: Pick<HealthRepository, 'getHealthSnapshot'>;
+    sites: Pick<SiteRepository, 'getSiteSnapshot'>;
+    diagnoses: Pick<DiagnosisRepository, 'getDiagnosis'>;
+    tasks: Pick<TaskRepository, 'getTask'>;
+    events: Pick<EventRepository, 'listEvents' | 'countEvents'>;
+  };
   /** 全局串行且通过 Handler 执行业务动作的任务引擎。 */
   taskEngine: TaskEngine;
   /** 当前进程中的定时健康检测调度器。 */
@@ -81,7 +93,7 @@ export function createApiRouter(options: ApiRouterOptions) {
   router.get('/api/status', (ctx) => {
     ctx.body = statusResponseSchema.parse({
       ok: true,
-      data: { snapshot: store.getHealthSnapshot() },
+      data: { snapshot: store.health.getHealthSnapshot() },
     });
   });
 
@@ -140,10 +152,10 @@ export function createApiRouter(options: ApiRouterOptions) {
   });
 
   router.get('/api/sites', (ctx) => {
-    const staleAfterMs = store.getSettings().checkIntervalMs * 2;
+    const staleAfterMs = store.settings.getSettings().checkIntervalMs * 2;
     const sites = Object.fromEntries(
       siteTargetSchema.options.map((target) => {
-        const result = store.getSiteSnapshot(target);
+        const result = store.sites.getSiteSnapshot(target);
         return [
           target,
           result
@@ -161,7 +173,7 @@ export function createApiRouter(options: ApiRouterOptions) {
   router.get('/api/candidates', (ctx) => {
     ctx.body = candidatesResponseSchema.parse({
       ok: true,
-      data: { diagnosis: store.getDiagnosis() },
+      data: { diagnosis: store.diagnoses.getDiagnosis() },
     });
   });
 
@@ -170,9 +182,9 @@ export function createApiRouter(options: ApiRouterOptions) {
     ctx.body = eventsResponseSchema.parse({
       ok: true,
       data: {
-        items: store.listEvents(query.limit, query.offset),
+        items: store.events.listEvents(query.limit, query.offset),
         ...query,
-        total: store.countEvents(),
+        total: store.events.countEvents(),
       },
     });
   });
@@ -180,13 +192,13 @@ export function createApiRouter(options: ApiRouterOptions) {
   router.get('/api/settings', (ctx) => {
     ctx.body = settingsResponseSchema.parse({
       ok: true,
-      data: { settings: store.getSettings() },
+      data: { settings: store.settings.getSettings() },
     });
   });
 
   router.get('/api/tasks/:id', (ctx) => {
     const { id } = parseRequest(taskParamsSchema, ctx.params);
-    const task = store.getTask(id);
+    const task = store.tasks.getTask(id);
     if (!task) throw new ApiError(404, 'NOT_FOUND', '任务不存在');
     ctx.body = taskResponseSchema.parse({ ok: true, data: { task } });
   });
@@ -202,7 +214,7 @@ export function createApiRouter(options: ApiRouterOptions) {
           throw new ApiError(409, 'ACTION_CONFLICT', '已有操作正在执行', {
             ...taskEngine.getConflictDetails(),
           });
-        const snapshot = store.getHealthSnapshot();
+        const snapshot = store.health.getHealthSnapshot();
         if (!snapshot?.lock.locked)
           throw new ApiError(
             409,
@@ -219,8 +231,8 @@ export function createApiRouter(options: ApiRouterOptions) {
             '自动切换绑定订阅与当前订阅不一致',
           );
       }
-      const previous = store.getSettings();
-      const updated = store.updateSettings(normalized);
+      const previous = store.settings.getSettings();
+      const updated = store.settings.updateSettings(normalized);
       const changedFields = Object.keys(normalized).filter(
         (key) =>
           previous[key as keyof typeof previous] !==
@@ -263,7 +275,7 @@ export function createApiRouter(options: ApiRouterOptions) {
   router.post('/api/actions/rollback', enqueueEmpty('rollback'));
   router.post('/api/actions/apply', (ctx) => {
     const input = parseRequest(applyActionRequestSchema, requestBody(ctx));
-    const diagnosis = store.getDiagnosis();
+    const diagnosis = store.diagnoses.getDiagnosis();
     if (!diagnosis)
       throw new ApiError(409, 'NO_DIAGNOSIS', '没有可用诊断，请先重新诊断');
     const candidate = diagnosis.candidates.find((item) => item.ip === input.ip);

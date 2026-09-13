@@ -2,7 +2,8 @@ import type {
   MonitoringSnapshot,
   StreamResource,
 } from '@clash-sentinel/shared';
-import type { SqliteStore } from '../../storage/store.js';
+import type { EventRepository } from '../../storage/event-repository.js';
+import type { SettingsRepository } from '../../storage/settings-repository.js';
 import type { StatusNotifier } from '../status-notifier.js';
 import { randomUUID } from 'node:crypto';
 import { noopLogger, type AppLogger } from '../../logging.js';
@@ -11,7 +12,10 @@ import type { TaskEngine } from '../tasks/task-engine.js';
 /** 定时健康检测调度器依赖。 */
 export interface HealthSchedulerOptions {
   /** 动态读取监测开关和周期的 SQLite 门面。 */
-  store: SqliteStore;
+  store: {
+    settings: Pick<SettingsRepository, 'getSettings'>;
+    events: Pick<EventRepository, 'appendEvent'>;
+  };
   /** 向 Web 客户端发布调度运行态和快照失效通知。 */
   notifier: StatusNotifier;
   /** 返回当前 Unix 毫秒时间；测试可注入可控时钟。 */
@@ -46,7 +50,7 @@ export class HealthScheduler {
    * @returns 结合最新设置与调度器内存时间生成的新快照。
    */
   getSnapshot(): MonitoringSnapshot {
-    const enabled = this.options.store.getSettings().monitoringEnabled;
+    const enabled = this.options.store.settings.getSettings().monitoringEnabled;
     const state = this.currentRun
       ? 'running'
       : enabled
@@ -84,7 +88,7 @@ export class HealthScheduler {
   /** 尝试占用定时槽；冲突时静默跳过并安排下一周期。 */
   private runTick(): void {
     if (this.stopped) return;
-    const settings = this.options.store.getSettings();
+    const settings = this.options.store.settings.getSettings();
     if (!settings.monitoringEnabled) {
       this.logger.debug('health:scheduler', 'monitoring disabled');
       this.schedule(settings.checkIntervalMs);
@@ -144,7 +148,9 @@ export class HealthScheduler {
         this.lastCompletedAt = new Date(this.now()).toISOString();
         this.currentRun = null;
         if (!this.stopped)
-          this.schedule(this.options.store.getSettings().checkIntervalMs);
+          this.schedule(
+            this.options.store.settings.getSettings().checkIntervalMs,
+          );
         this.options.notifier.publish('monitoring_completed', [
           ...new Set(changedResources),
         ]);
@@ -176,7 +182,7 @@ export class HealthScheduler {
   /** 记录不包含原始异常、路径或响应正文的定时轮次失败。 */
   private appendFailureEvent(): boolean {
     try {
-      this.options.store.appendEvent({
+      this.options.store.events.appendEvent({
         type: 'scheduled_health_failed',
         severity: 'error',
         retention: 'ordinary',

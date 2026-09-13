@@ -8,7 +8,9 @@ import type {
 } from '@clash-sentinel/shared';
 import { LegacyAdapterError, type LegacyAdapter } from '../legacy/adapter.js';
 import { noopLogger, type AppLogger } from '../logging.js';
-import type { SqliteStore } from '../storage/store.js';
+import type { DiagnosisRepository } from '../storage/diagnosis-repository.js';
+import type { HealthRepository } from '../storage/health-repository.js';
+import type { SettingsRepository } from '../storage/settings-repository.js';
 import type { HealthCheckSource } from './health/health-check.js';
 
 /** 自动切换服务允许调用的最小 Legacy 诊断和应用能力。 */
@@ -17,7 +19,14 @@ type AutoSwitchLegacyOperations = Pick<LegacyAdapter, 'diagnose' | 'applyIp'>;
 /** 自动切换领域服务的构造依赖。 */
 export interface AutoSwitchServiceOptions {
   /** 读取设置、健康快照和诊断并写入切换结果的存储门面。 */
-  store: SqliteStore;
+  store: {
+    settings: Pick<SettingsRepository, 'getSettings' | 'updateSettings'>;
+    health: Pick<
+      HealthRepository,
+      'getHealthSnapshot' | 'upsertHealthSnapshot'
+    >;
+    diagnoses: Pick<DiagnosisRepository, 'getDiagnosis' | 'replaceDiagnosis'>;
+  };
   /** 执行严格诊断和应用候选 IP 的 Legacy 能力。 */
   adapter: AutoSwitchLegacyOperations;
   /** 测试可注入的当前时间提供器。 */
@@ -102,7 +111,7 @@ export class AutoSwitchService {
     const currentIp = input?.currentIp;
     const profileUid = input?.profileUid;
     const reuseDiagnosis = input?.reuseDiagnosis;
-    const snapshot = this.options.store.getHealthSnapshot();
+    const snapshot = this.options.store.health.getHealthSnapshot();
     if (
       (source !== 'manual' && source !== 'scheduled') ||
       typeof parentId !== 'string' ||
@@ -133,7 +142,7 @@ export class AutoSwitchService {
    * @throws 条件失效、诊断失败或配置应用失败时交由 Handler 处理。
    */
   async execute(plan: AutoSwitchPlan): Promise<AutoSwitchExecution> {
-    const settings = this.options.store.getSettings();
+    const settings = this.options.store.settings.getSettings();
     const snapshot = plan.snapshot;
     if (
       !settings.autoSwitchEnabled ||
@@ -149,8 +158,8 @@ export class AutoSwitchService {
     if (!snapshot.lock.locked) throw new Error('自动切换计划缺少锁定入口');
     const lock = snapshot.lock;
     const diagnosis = plan.reuseDiagnosis
-      ? this.options.store.getDiagnosis()
-      : this.options.store.replaceDiagnosis(
+      ? this.options.store.diagnoses.getDiagnosis()
+      : this.options.store.diagnoses.replaceDiagnosis(
           await this.options.adapter.diagnose(),
         );
     const changedResources: StreamResource[] = ['monitoring', 'status'];
@@ -204,7 +213,7 @@ export class AutoSwitchService {
   ): AutoSwitchFailureHandling {
     const handling = this.applyFailurePolicy(
       plan.snapshot,
-      this.options.store.getSettings().autoSwitchCooldownMs,
+      this.options.store.settings.getSettings().autoSwitchCooldownMs,
       plan.phase,
       error,
       recoveryStatus,
@@ -223,7 +232,7 @@ export class AutoSwitchService {
    * @returns recoveryStatus=unknown 并包含 settings 的资源变化。
    */
   handleInvalidContext(): AutoSwitchFailureHandling {
-    this.options.store.updateSettings({
+    this.options.store.settings.updateSettings({
       autoSwitchEnabled: false,
       autoSwitchProfileUid: null,
     });
@@ -266,7 +275,7 @@ export class AutoSwitchService {
       effectiveRecovery === 'recovery_failed' ||
       effectiveRecovery === 'unknown'
     ) {
-      this.options.store.updateSettings({
+      this.options.store.settings.updateSettings({
         autoSwitchEnabled: false,
         autoSwitchProfileUid: null,
       });
@@ -284,7 +293,7 @@ export class AutoSwitchService {
 
   /** 将诊断推荐地址写入当前健康快照。 */
   private writeRecommended(snapshot: HealthSnapshot, recommendedIp: string) {
-    this.options.store.upsertHealthSnapshot({
+    this.options.store.health.upsertHealthSnapshot({
       ...snapshot,
       recommendedIp,
       updatedAt: this.now().toISOString(),
@@ -298,7 +307,7 @@ export class AutoSwitchService {
     recommendedIp: string | null,
   ) {
     const completedAt = this.now();
-    this.options.store.upsertHealthSnapshot({
+    this.options.store.health.upsertHealthSnapshot({
       ...snapshot,
       recommendedIp,
       autoSwitchCooldownUntil: new Date(
@@ -315,7 +324,7 @@ export class AutoSwitchService {
     cooldownMs: number,
   ) {
     const completedAt = this.now();
-    this.options.store.upsertHealthSnapshot({
+    this.options.store.health.upsertHealthSnapshot({
       ...snapshot,
       status: 'healthy',
       lock: {

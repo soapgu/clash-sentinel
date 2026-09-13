@@ -6,7 +6,7 @@ import {
   projectRootFromModuleUrl,
   resolveRuntimePaths,
 } from './project-paths.js';
-import { resolveDatabasePath } from './storage/store.js';
+import { resolveDatabasePath } from './storage/connection.js';
 
 describe('服务端项目路径', () => {
   test('src 与 dist 模块位置回溯到相同仓库根目录', () => {

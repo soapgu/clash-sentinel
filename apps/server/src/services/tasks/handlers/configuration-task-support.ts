@@ -1,6 +1,6 @@
 import type { HealthSnapshot } from '@clash-sentinel/shared';
 import type { LegacyAdapter } from '../../../legacy/adapter.js';
-import type { SqliteStore } from '../../../storage/store.js';
+import type { HealthRepository } from '../../../storage/health-repository.js';
 
 /** apply/reset/rollback Handler 可以使用的最小配置操作集合。 */
 export type ConfigurationOperations = Pick<
@@ -10,7 +10,7 @@ export type ConfigurationOperations = Pick<
 
 /** 配置动作成功后重新读取身份，并将旧健康结论保守地置为 unknown。 */
 export async function refreshHealthSnapshotAfterConfiguration(
-  store: SqliteStore,
+  store: Pick<HealthRepository, 'getHealthSnapshot' | 'upsertHealthSnapshot'>,
   adapter: Pick<LegacyAdapter, 'getStatus'>,
   clearCooldown: boolean,
 ) {

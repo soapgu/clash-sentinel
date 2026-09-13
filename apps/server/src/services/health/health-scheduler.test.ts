@@ -141,7 +141,7 @@ test('启动立即执行且慢轮次完成前不会重入或创建任务', async
   });
   await vi.advanceTimersByTimeAsync(180_000);
   expect(value.healthCheck.run).toHaveBeenCalledOnce();
-  expect(value.store.listTasks()).toHaveLength(0);
+  expect(value.store.tasks.listTasks()).toHaveLength(0);
   resolveRun(execution());
   await vi.advanceTimersByTimeAsync(0);
   expect(notifications.at(-1)).toMatchObject({
@@ -174,7 +174,7 @@ test('手动任务占槽时静默跳过，监测关闭时不执行', async () =>
   value.scheduler.start();
   expect(value.healthCheck.run).not.toHaveBeenCalled();
   expect(notifications).toEqual([]);
-  expect(value.store.countEvents()).toBe(0);
+  expect(value.store.events.countEvents()).toBe(0);
   expect(value.scheduler.getSnapshot()).toEqual({
     enabled: true,
     state: 'waiting',
@@ -186,7 +186,7 @@ test('手动任务占槽时静默跳过，监测关闭时不执行', async () =>
   await value.scheduler.stop();
 
   const disabled = await setup(async () => execution());
-  disabled.store.updateSettings({ monitoringEnabled: false });
+  disabled.store.settings.updateSettings({ monitoringEnabled: false });
   disabled.scheduler.start();
   expect(disabled.healthCheck.run).not.toHaveBeenCalled();
   expect(disabled.scheduler.getSnapshot()).toEqual({
@@ -260,7 +260,7 @@ test('运行期间关闭监测会完成本轮再转为暂停', async () => {
   });
   const value = await setup(() => running);
   value.scheduler.start();
-  value.store.updateSettings({ monitoringEnabled: false });
+  value.store.settings.updateSettings({ monitoringEnabled: false });
   expect(value.scheduler.getSnapshot()).toEqual({
     enabled: false,
     state: 'running',
@@ -304,11 +304,13 @@ test('整轮失败也记录完成时间并继续真实调度', async () => {
     nextRunAt: '2026-09-09T04:01:00.000Z',
     activeTaskId: null,
   });
-  expect(value.store.listEvents()).toHaveLength(1);
+  expect(value.store.events.listEvents()).toHaveLength(1);
   expect(notifications.at(-1)).toMatchObject({
     reason: 'monitoring_completed',
     resources: ['monitoring', 'status', 'sites', 'events'],
   });
-  expect(JSON.stringify(value.store.listEvents())).not.toContain('/private');
+  expect(JSON.stringify(value.store.events.listEvents())).not.toContain(
+    '/private',
+  );
   await value.scheduler.stop();
 });

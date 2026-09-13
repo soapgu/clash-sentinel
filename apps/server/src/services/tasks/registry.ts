@@ -1,5 +1,7 @@
 import type { LegacyAdapter } from '../../legacy/adapter.js';
-import type { SqliteStore } from '../../storage/store.js';
+import type { DiagnosisRepository } from '../../storage/diagnosis-repository.js';
+import type { HealthRepository } from '../../storage/health-repository.js';
+import type { SettingsRepository } from '../../storage/settings-repository.js';
 import type { AutoSwitchService } from '../auto-switch-service.js';
 import type { HealthCheckService } from '../health/health-check.js';
 import { ApplyTaskHandler } from './handlers/apply-task-handler.js';
@@ -25,7 +27,14 @@ export type LegacyOperations = Pick<
 /** 创建完整 Handler 注册表需要的领域服务依赖。 */
 export interface TaskHandlerDependencies {
   /** Handler 读写任务业务快照和设置的 SQLite 门面。 */
-  store: SqliteStore;
+  store: {
+    health: Pick<
+      HealthRepository,
+      'getHealthSnapshot' | 'upsertHealthSnapshot'
+    >;
+    settings: Pick<SettingsRepository, 'updateSettings'>;
+    diagnoses: Pick<DiagnosisRepository, 'replaceDiagnosis'>;
+  };
   /** 诊断及配置动作使用的受限 Legacy 能力。 */
   adapter: Pick<
     LegacyAdapter,
@@ -53,10 +62,19 @@ export function createTaskHandlerRegistry(
     health_check: new HealthCheckTaskHandler({
       healthCheck: dependencies.healthCheck,
     }),
-    diagnose: new DiagnoseTaskHandler(dependencies.store, dependencies.adapter),
-    apply: new ApplyTaskHandler(dependencies.store, dependencies.adapter),
+    diagnose: new DiagnoseTaskHandler(
+      dependencies.store.diagnoses,
+      dependencies.adapter,
+    ),
+    apply: new ApplyTaskHandler(
+      dependencies.store.health,
+      dependencies.adapter,
+    ),
     reset: new ResetTaskHandler(dependencies.store, dependencies.adapter),
-    rollback: new RollbackTaskHandler(dependencies.store, dependencies.adapter),
+    rollback: new RollbackTaskHandler(
+      dependencies.store.health,
+      dependencies.adapter,
+    ),
     auto_switch: new AutoSwitchTaskHandler(dependencies.autoSwitch),
   } satisfies TaskHandlerRegistry;
 }

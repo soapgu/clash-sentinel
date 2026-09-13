@@ -93,7 +93,7 @@ test('使用注册 Handler 完成统一生命周期并保持结果结构', async
   await value.engine.waitForIdle();
 
   expect(execute).toHaveBeenCalledOnce();
-  expect(value.store.getTask(task.id)).toMatchObject({
+  expect(value.store.tasks.getTask(task.id)).toMatchObject({
     status: 'succeeded',
     result: { received: 42 },
   });
@@ -124,7 +124,7 @@ test('声明式后续任务复用租约并经过同一个引擎', async () => {
 
   expect(manual).toHaveBeenCalledOnce();
   expect(automatic).toHaveBeenCalledOnce();
-  expect(value.store.listTasks()).toMatchObject([
+  expect(value.store.tasks.listTasks()).toMatchObject([
     { type: 'auto_switch', status: 'succeeded' },
     { type: 'health_check', status: 'succeeded' },
   ]);
@@ -154,7 +154,7 @@ test('后续任务落库失败时终止当前链并保持引擎可用', async ()
     }),
     { ...noopLogger, error: errorLog },
   );
-  const createTask = vi.spyOn(value.store, 'createTask');
+  const createTask = vi.spyOn(value.store.tasks, 'createTask');
   const originalCreateTask = createTask.getMockImplementation()!;
   createTask
     .mockImplementationOnce(originalCreateTask)
@@ -167,17 +167,13 @@ test('后续任务落库失败时终止当前链并保持引擎可用', async ()
   });
 
   await expect(value.engine.waitForIdle()).resolves.toBeUndefined();
-  expect(errorLog).toHaveBeenCalledWith(
-    'task:service',
-    'task chain aborted',
-    {
-      taskType: 'health_check',
-      taskId: rootTask.id,
-      requestId: 'request-1',
-      error: databaseError,
-    },
-  );
-  expect(value.store.getTask(rootTask.id)).toMatchObject({
+  expect(errorLog).toHaveBeenCalledWith('task:service', 'task chain aborted', {
+    taskType: 'health_check',
+    taskId: rootTask.id,
+    requestId: 'request-1',
+    error: databaseError,
+  });
+  expect(value.store.tasks.getTask(rootTask.id)).toMatchObject({
     status: 'succeeded',
   });
   expect(automatic).not.toHaveBeenCalled();
@@ -186,7 +182,7 @@ test('后续任务落库失败时终止当前链并保持引擎可用', async ()
   const nextRootTask = value.engine.enqueue('diagnose');
   await value.engine.waitForIdle();
   expect(diagnose).toHaveBeenCalledOnce();
-  expect(value.store.getTask(nextRootTask.id)).toMatchObject({
+  expect(value.store.tasks.getTask(nextRootTask.id)).toMatchObject({
     status: 'succeeded',
   });
 });
@@ -211,8 +207,8 @@ test('瞬时任务执行 Handler 但不写任务、审计或生命周期通知',
       task: expect.objectContaining({ persistence: 'transient' }),
     }),
   );
-  expect(value.store.listTasks()).toEqual([]);
-  expect(value.store.listEvents()).toEqual([]);
+  expect(value.store.tasks.listTasks()).toEqual([]);
+  expect(value.store.events.listEvents()).toEqual([]);
   expect(value.notifications).toEqual([]);
 });
 
@@ -292,8 +288,8 @@ test('瞬时任务失败时归一化错误且不执行后续持久化生命周�
     error,
     errorCode: 'INTERNAL_ERROR',
   });
-  expect(value.store.listTasks()).toEqual([]);
-  expect(value.store.listEvents()).toEqual([]);
+  expect(value.store.tasks.listTasks()).toEqual([]);
+  expect(value.store.events.listEvents()).toEqual([]);
   expect(value.notifications).toEqual([]);
 });
 
@@ -321,8 +317,10 @@ test('瞬时根任务的后续任务继续持久化并合并资源', async () =>
     '550e8400-e29b-41d4-a716-446655440000',
   )!;
 
-  await vi.waitFor(() => expect(value.store.listTasks()).toHaveLength(1));
-  expect(value.engine.getActiveTaskId()).toBe(value.store.listTasks()[0]?.id);
+  await vi.waitFor(() => expect(value.store.tasks.listTasks()).toHaveLength(1));
+  expect(value.engine.getActiveTaskId()).toBe(
+    value.store.tasks.listTasks()[0]?.id,
+  );
   finishAutomatic({
     result: { status: 'changed' },
     changedResources: ['settings'],
@@ -333,7 +331,7 @@ test('瞬时根任务的后续任务继续持久化并合并资源', async () =>
     succeeded: true,
     changedResources: ['status', 'settings', 'events'],
   });
-  expect(value.store.listTasks()).toMatchObject([
+  expect(value.store.tasks.listTasks()).toMatchObject([
     { type: 'auto_switch', status: 'succeeded' },
   ]);
   expect(value.engine.hasActiveOperation()).toBe(false);

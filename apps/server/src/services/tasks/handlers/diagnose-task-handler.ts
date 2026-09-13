@@ -1,5 +1,5 @@
 import type { LegacyAdapter } from '../../../legacy/adapter.js';
-import type { SqliteStore } from '../../../storage/store.js';
+import type { DiagnosisRepository } from '../../../storage/diagnosis-repository.js';
 import { asStoredJson, type TaskHandler } from '../contracts.js';
 import { legacyFailure } from '../legacy-task-failure.js';
 
@@ -22,7 +22,7 @@ export class DiagnoseTaskHandler implements TaskHandler {
    * @param adapter 严格诊断 Legacy 能力。
    */
   constructor(
-    private readonly store: SqliteStore,
+    private readonly store: Pick<DiagnosisRepository, 'replaceDiagnosis'>,
     private readonly adapter: Pick<LegacyAdapter, 'diagnose'>,
   ) {}
 

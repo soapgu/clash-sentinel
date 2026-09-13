@@ -4,7 +4,11 @@ import type {
   SiteResult,
   SiteTarget,
 } from '@clash-sentinel/shared';
-import type { SqliteStore } from '../../storage/store.js';
+import type { DiagnosisRepository } from '../../storage/diagnosis-repository.js';
+import type { EventRepository } from '../../storage/event-repository.js';
+import type { HealthRepository } from '../../storage/health-repository.js';
+import type { SettingsRepository } from '../../storage/settings-repository.js';
+import type { SiteRepository } from '../../storage/site-repository.js';
 import type { LegacyAdapter } from '../../legacy/adapter.js';
 import type { ClashProxyConfig } from './proxy-config.js';
 import type { SiteProbe } from './site-probe.js';
@@ -30,7 +34,16 @@ export type HealthLegacyOperations = Pick<
 /** 创建完整健康检测编排器所需的依赖。 */
 export interface HealthCheckServiceOptions {
   /** SQLite 快照、历史、诊断和事件门面。 */
-  store: SqliteStore;
+  store: {
+    settings: Pick<SettingsRepository, 'getSettings' | 'updateSettings'>;
+    health: Pick<
+      HealthRepository,
+      'getHealthSnapshot' | 'upsertHealthSnapshot'
+    >;
+    sites: Pick<SiteRepository, 'appendSiteResult'>;
+    diagnoses: Pick<DiagnosisRepository, 'clearDiagnosis' | 'replaceDiagnosis'>;
+    events: Pick<EventRepository, 'appendEvent'>;
+  };
   /** 可注入的六站 HTTP 探测器。 */
   siteProbe: SiteProbe;
   /** 从固定 Clash 配置解析代理端口的读取器。 */
@@ -121,7 +134,7 @@ export class HealthCheckService {
       eventAppended: false,
       settingsUpdated: false,
     };
-    const settings = this.options.store.getSettings();
+    const settings = this.options.store.settings.getSettings();
     const directPromise = Promise.all(
       (['baidu', 'taobao', 'tencent'] as const).map((target) =>
         this.options.siteProbe.probe({
@@ -164,10 +177,10 @@ export class HealthCheckService {
         errorType: result.errorType,
       });
     for (const result of [...directResults, ...proxyResults])
-      this.options.store.appendSiteResult(result);
+      this.options.store.sites.appendSiteResult(result);
     changes.sitesUpdated = true;
 
-    const previous = this.options.store.getHealthSnapshot();
+    const previous = this.options.store.health.getHealthSnapshot();
     const status = await this.readStatusSafely();
     const directSuccess = directResults.filter((item) => item.reachable).length;
     let snapshot = this.baseSnapshot(previous, status, directSuccess);
@@ -191,16 +204,17 @@ export class HealthCheckService {
       identityChanged = legacyHealth.identityChanged ?? identityChanged;
     }
     if (identityChanged) {
-      if (this.options.store.clearDiagnosis()) changes.candidatesUpdated = true;
+      if (this.options.store.diagnoses.clearDiagnosis())
+        changes.candidatesUpdated = true;
       snapshot.consecutiveFailures = 0;
       snapshot.recommendedIp = null;
       if (identityChanged === 'profile') {
-        const currentSettings = this.options.store.getSettings();
+        const currentSettings = this.options.store.settings.getSettings();
         if (
           currentSettings.autoSwitchEnabled ||
           currentSettings.autoSwitchProfileUid !== null
         ) {
-          this.options.store.updateSettings({
+          this.options.store.settings.updateSettings({
             autoSwitchEnabled: false,
             autoSwitchProfileUid: null,
           });
@@ -214,10 +228,10 @@ export class HealthCheckService {
     }
 
     snapshot.status = this.finalStatus(snapshot, status, proxyResults);
-    let saved = this.options.store.upsertHealthSnapshot(snapshot);
+    let saved = this.options.store.health.upsertHealthSnapshot(snapshot);
     changes.statusUpdated = true;
     if (snapshot.status === 'entry_down' && previous?.status !== 'entry_down') {
-      const diagnosis = this.options.store.replaceDiagnosis(
+      const diagnosis = this.options.store.diagnoses.replaceDiagnosis(
         await this.options.legacy.diagnose(),
       );
       changes.candidatesUpdated = true;
@@ -225,7 +239,7 @@ export class HealthCheckService {
         diagnosis.candidates,
         snapshot.lock.locked ? snapshot.lock.ip : null,
       );
-      saved = this.options.store.upsertHealthSnapshot(snapshot);
+      saved = this.options.store.health.upsertHealthSnapshot(snapshot);
     }
     if (source === 'scheduled' && previous?.status !== saved.status) {
       changes.eventAppended =
@@ -267,7 +281,7 @@ export class HealthCheckService {
     snapshot: HealthSnapshot,
     changes: HealthCheckChanges,
   ): AutoSwitchRequest | null {
-    const settings = this.options.store.getSettings();
+    const settings = this.options.store.settings.getSettings();
     if (
       !settings.autoSwitchEnabled ||
       !snapshot.profile ||
@@ -308,7 +322,7 @@ export class HealthCheckService {
     snapshot: HealthSnapshot,
   ) {
     try {
-      this.options.store.appendEvent({
+      this.options.store.events.appendEvent({
         type: change === 'profile' ? 'profile_changed' : 'subscription_updated',
         severity: 'warning',
         retention: 'ordinary',
@@ -406,7 +420,7 @@ export class HealthCheckService {
     snapshot: HealthSnapshot,
   ): boolean {
     try {
-      this.options.store.appendEvent({
+      this.options.store.events.appendEvent({
         type: 'health_status_changed',
         severity: ['internet_down', 'entry_down', 'proxy_error'].includes(
           snapshot.status,

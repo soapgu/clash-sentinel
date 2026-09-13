@@ -8,7 +8,8 @@ import type {
 import { taskTypeSchema } from '@clash-sentinel/shared';
 import { ApiError } from '../../api/errors.js';
 import { noopLogger, type AppLogger } from '../../logging.js';
-import type { SqliteStore } from '../../storage/store.js';
+import type { EventRepository } from '../../storage/event-repository.js';
+import type { TaskRepository } from '../../storage/task-repository.js';
 import type { StatusNotifier } from '../status-notifier.js';
 import type {
   TaskExecutionResult,
@@ -32,7 +33,13 @@ export interface TaskLogContext {
 /** 创建通用任务引擎需要的横切依赖。 */
 export interface TaskEngineOptions {
   /** 持久化任务状态、结果和审计事件的 SQLite 门面。 */
-  store: SqliteStore;
+  store: {
+    tasks: Pick<
+      TaskRepository,
+      'createTask' | 'startTask' | 'completeTask' | 'failTask'
+    >;
+    events: Pick<EventRepository, 'appendEvent'>;
+  };
   /** 发布任务生命周期及业务资源失效通知。 */
   notifier: StatusNotifier;
   /** 覆盖全部任务类型且在运行时不可变的 Handler 注册表。 */
@@ -275,7 +282,7 @@ export class TaskEngine {
    * @returns 新创建的任务记录。
    */
   private createTask(submission: TaskSubmission) {
-    const task = this.options.store.createTask(
+    const task = this.options.store.tasks.createTask(
       submission.type,
       submission.input ?? null,
     );
@@ -314,7 +321,7 @@ export class TaskEngine {
   > {
     const startedAt = Date.now();
     try {
-      this.options.store.startTask(task.id);
+      this.options.store.tasks.startTask(task.id);
       this.logger.info('task:service', 'started', {
         taskType: task.type,
         taskId: task.id,
@@ -329,7 +336,7 @@ export class TaskEngine {
         input,
         logger: this.logger,
       });
-      this.options.store.completeTask(task.id, execution.result);
+      this.options.store.tasks.completeTask(task.id, execution.result);
       const eventAppended = this.appendEventSafely(
         task,
         handler,
@@ -354,7 +361,7 @@ export class TaskEngine {
       const failure = await this.resolveFailure(handler, identity, error);
       let failedPersisted = false;
       try {
-        this.options.store.failTask(
+        this.options.store.tasks.failTask(
           task.id,
           failure.code,
           failure.message,
@@ -443,7 +450,7 @@ export class TaskEngine {
     recoveryStatus: TaskFailureResult['recoveryStatus'] = null,
   ) {
     try {
-      this.options.store.appendEvent({
+      this.options.store.events.appendEvent({
         type: `${task.type}_${succeeded ? 'succeeded' : 'failed'}`,
         severity: succeeded ? 'info' : 'error',
         retention: handler.critical ? 'critical' : 'ordinary',

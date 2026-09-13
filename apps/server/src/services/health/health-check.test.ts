@@ -131,8 +131,8 @@ test('两个国内站点成功时评价入口并保存全部六站', async () =>
     settingsUpdated: false,
   });
   expect(value.legacy.healthCheck).toHaveBeenCalledOnce();
-  expect(value.store.listSiteHistory('taobao')).toHaveLength(1);
-  expect(value.store.getSiteSnapshot('openai_status')).not.toBeNull();
+  expect(value.store.sites.listSiteHistory('taobao')).toHaveLength(1);
+  expect(value.store.sites.getSiteSnapshot('openai_status')).not.toBeNull();
 });
 
 test('断网或不确定时不评价入口并保留失败计数', async () => {
@@ -144,7 +144,7 @@ test('断网或不确定时不评价入口并保留失败计数', async () => {
       ]),
     );
     const value = await setup(outcomes);
-    value.store.upsertHealthSnapshot({
+    value.store.health.upsertHealthSnapshot({
       status: 'entry_suspected',
       profile: null,
       lock: { locked: false },
@@ -183,12 +183,14 @@ test('入口首次达到失败阈值后由 Node 执行严格诊断', async () =>
     changes: { candidatesUpdated: true, eventAppended: true },
   });
   expect(value.legacy.diagnose).toHaveBeenCalledOnce();
-  expect(value.store.getDiagnosis()?.recommendedIp).toBe('198.51.100.21');
+  expect(value.store.diagnoses.getDiagnosis()?.recommendedIp).toBe(
+    '198.51.100.21',
+  );
 });
 
 test('状态变化事件写入失败不反转检测结果且摘要保持未写入', async () => {
   const value = await setup();
-  vi.spyOn(value.store, 'appendEvent').mockImplementation(() => {
+  vi.spyOn(value.store.events, 'appendEvent').mockImplementation(() => {
     throw new Error('event unavailable');
   });
   const execution = await value.service.run('scheduled');
@@ -245,7 +247,7 @@ test('代理配置缺失时不发出海外请求并标记 proxy_error', async ()
     'proxy_error',
   );
   expect(value.siteProbe.probe).toHaveBeenCalledTimes(3);
-  expect(value.store.getSiteSnapshot('google')).toMatchObject({
+  expect(value.store.sites.getSiteSnapshot('google')).toMatchObject({
     reachable: false,
     errorType: 'proxy',
   });
@@ -269,17 +271,17 @@ test('阈值诊断报告读取失败时保留 entry_down 快照并使本轮失�
   await expect(value.service.run('scheduled')).rejects.toThrow(
     'invalid report',
   );
-  expect(value.store.getHealthSnapshot()?.status).toBe('entry_down');
+  expect(value.store.health.getHealthSnapshot()?.status).toBe('entry_down');
 });
 
 test('订阅 UID 变化清空诊断和失败计数并关闭自动切换', async () => {
   const value = await setup();
-  value.store.replaceDiagnosis(diagnosis());
-  value.store.updateSettings({
+  value.store.diagnoses.replaceDiagnosis(diagnosis());
+  value.store.settings.updateSettings({
     autoSwitchEnabled: true,
     autoSwitchProfileUid: 'profile-old',
   });
-  value.store.upsertHealthSnapshot({
+  value.store.health.upsertHealthSnapshot({
     ...(await value.service.run('manual')).snapshot,
     profile: { uid: 'profile-old', name: '旧订阅' },
     consecutiveFailures: 2,
@@ -291,8 +293,8 @@ test('订阅 UID 变化清空诊断和失败计数并关闭自动切换', async 
     settingsUpdated: true,
     eventAppended: true,
   });
-  expect(value.store.getDiagnosis()).toBeNull();
-  expect(value.store.getSettings()).toMatchObject({
+  expect(value.store.diagnoses.getDiagnosis()).toBeNull();
+  expect(value.store.settings.getSettings()).toMatchObject({
     autoSwitchEnabled: false,
     autoSwitchProfileUid: null,
   });
@@ -301,8 +303,8 @@ test('订阅 UID 变化清空诊断和失败计数并关闭自动切换', async 
 
 test('同一 UID 文件指纹变化废弃诊断但保留自动开关', async () => {
   const value = await setup();
-  value.store.replaceDiagnosis(diagnosis());
-  value.store.updateSettings({
+  value.store.diagnoses.replaceDiagnosis(diagnosis());
+  value.store.settings.updateSettings({
     autoSwitchEnabled: true,
     autoSwitchProfileUid: 'profile-demo',
   });
@@ -323,14 +325,14 @@ test('同一 UID 文件指纹变化废弃诊断但保留自动开关', async () 
     candidatesUpdated: true,
     settingsUpdated: false,
   });
-  expect(value.store.getDiagnosis()).toBeNull();
-  expect(value.store.getSettings().autoSwitchEnabled).toBe(true);
+  expect(value.store.diagnoses.getDiagnosis()).toBeNull();
+  expect(value.store.settings.getSettings().autoSwitchEnabled).toBe(true);
 });
 
 /** 构造达到失败阈值且启用自动切换的一轮健康检测。 */
 async function autoSwitchSetup() {
   const value = await setup();
-  value.store.updateSettings({
+  value.store.settings.updateSettings({
     autoSwitchEnabled: true,
     autoSwitchProfileUid: 'profile-demo',
     entryFailureThreshold: 3,
@@ -366,7 +368,7 @@ for (const [name, patch] of [
 ] as const) {
   test(`${name}时不返回自动切换请求`, async () => {
     const value = await autoSwitchSetup();
-    value.store.updateSettings(patch);
+    value.store.settings.updateSettings(patch);
     expect((await value.service.run('scheduled')).autoSwitchRequest).toBeNull();
   });
 }
@@ -385,7 +387,7 @@ for (const [name, outcomes, statusOverrides] of [
 ] as const) {
   test(`${name}时不返回自动切换请求`, async () => {
     const value = await setup(outcomes, statusOverrides);
-    value.store.updateSettings({
+    value.store.settings.updateSettings({
       autoSwitchEnabled: true,
       autoSwitchProfileUid: 'profile-demo',
     });
@@ -395,7 +397,7 @@ for (const [name, outcomes, statusOverrides] of [
 
 test('健康状态正常时不返回自动切换请求', async () => {
   const value = await setup();
-  value.store.updateSettings({
+  value.store.settings.updateSettings({
     autoSwitchEnabled: true,
     autoSwitchProfileUid: 'profile-demo',
   });
@@ -410,7 +412,7 @@ for (const [until, blocked] of [
   test(`冷却到期时间 ${until} 的触发边界`, async () => {
     const value = await autoSwitchSetup();
     const execution = await value.service.run('scheduled');
-    value.store.upsertHealthSnapshot({
+    value.store.health.upsertHealthSnapshot({
       ...execution.snapshot,
       autoSwitchCooldownUntil: until,
     });
@@ -424,7 +426,7 @@ for (const [until, blocked] of [
 test('检测期间更新设置后采用最新自动切换开关', async () => {
   const value = await autoSwitchSetup();
   value.legacy.diagnose.mockImplementation(async () => {
-    value.store.updateSettings({ autoSwitchEnabled: false });
+    value.store.settings.updateSettings({ autoSwitchEnabled: false });
     return diagnosis();
   });
   expect((await value.service.run('scheduled')).autoSwitchRequest).toBeNull();

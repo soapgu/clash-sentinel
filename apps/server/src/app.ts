@@ -105,11 +105,7 @@ export function createApp(options: CreateAppOptions) {
                   Number.isInteger(parserStatus) &&
                   parserStatus >= 400 &&
                   parserStatus < 500
-                ? new ApiError(
-                    parserStatus,
-                    'INVALID_REQUEST',
-                    '请求无法处理',
-                  )
+                ? new ApiError(parserStatus, 'INVALID_REQUEST', '请求无法处理')
                 : new ApiError(500, 'INTERNAL_ERROR', '后台处理失败');
       ctx.state.apiErrorCode = apiError.code;
       if (!(error instanceof ApiError)) ctx.state.unhandledError = error;

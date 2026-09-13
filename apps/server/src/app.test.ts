@@ -162,7 +162,7 @@ async function createSetup(
   );
   const healthCheck = {
     run: vi.fn(async () => {
-      const snapshot = store.upsertHealthSnapshot({
+      const snapshot = store.health.upsertHealthSnapshot({
         status: 'healthy',
         profile: legacyStatus().profile,
         lock: legacyStatus().lock,
@@ -171,7 +171,7 @@ async function createSetup(
         consecutiveFailures: 0,
         recommendedIp: null,
         autoSwitchCooldownUntil:
-          store.getHealthSnapshot()?.autoSwitchCooldownUntil ?? null,
+          store.health.getHealthSnapshot()?.autoSwitchCooldownUntil ?? null,
         updatedAt: '2026-09-08T04:00:00.000Z',
       });
       return {
@@ -265,8 +265,8 @@ test('健康、空快照和固定站点接口遵守只读契约', async () => {
   await request(setup.app.callback()).get('/api/candidates').expect(200);
   await request(setup.app.callback()).get('/api/settings').expect(200);
   expect(setup.adapter.getStatus).not.toHaveBeenCalled();
-  expect(setup.store.listTasks()).toHaveLength(0);
-  expect(setup.store.countEvents()).toBe(0);
+  expect(setup.store.tasks.listTasks()).toHaveLength(0);
+  expect(setup.store.events.countEvents()).toBe(0);
 });
 
 test('定时监测接口返回内存快照且重复读取没有副作用', async () => {
@@ -317,8 +317,8 @@ test('定时监测接口返回内存快照且重复读取没有副作用', async
   }
   expect(setup.scheduler.getSnapshot).toHaveBeenCalledTimes(states.length);
   expect(setup.adapter.getStatus).not.toHaveBeenCalled();
-  expect(setup.store.listTasks()).toHaveLength(0);
-  expect(setup.store.countEvents()).toBe(0);
+  expect(setup.store.tasks.listTasks()).toHaveLength(0);
+  expect(setup.store.events.countEvents()).toBe(0);
 });
 
 test('SSE 建连同步、保活且不受普通 API 超时限制', async () => {
@@ -421,7 +421,7 @@ test('SSE 多客户端隔离且通知中心关闭会结束全部长连接', asyn
 
 test('站点接口动态标记过期且定时检测占槽时拒绝手动动作', async () => {
   const setup = await createSetup();
-  setup.store.appendSiteResult({
+  setup.store.sites.appendSiteResult({
     target: 'baidu',
     reachable: true,
     httpStatus: 200,
@@ -441,7 +441,9 @@ test('站点接口动态标记过期且定时检测占槽时拒绝手动动作',
   });
   const sites = await request(boundaryApp.callback()).get('/api/sites');
   expect(sites.body.data.sites.baidu.stale).toBe(true);
-  expect(setup.store.getSiteSnapshot('baidu')).not.toHaveProperty('stale');
+  expect(setup.store.sites.getSiteSnapshot('baidu')).not.toHaveProperty(
+    'stale',
+  );
 
   let finishScheduled!: () => void;
   setup.healthCheck.run.mockImplementationOnce(
@@ -449,7 +451,7 @@ test('站点接口动态标记过期且定时检测占槽时拒绝手动动作',
       new Promise((resolve) => {
         finishScheduled = () =>
           resolve({
-            snapshot: setup.store.getHealthSnapshot()!,
+            snapshot: setup.store.health.getHealthSnapshot()!,
             autoSwitchRequest: null,
             changes: {
               statusUpdated: false,
@@ -478,7 +480,7 @@ test('站点接口动态标记过期且定时检测占槽时拒绝手动动作',
 
 test('事件分页返回 total 并拒绝未知或越界查询', async () => {
   const setup = await createSetup();
-  setup.store.appendEvent({
+  setup.store.events.appendEvent({
     type: 'test',
     severity: 'info',
     retention: 'ordinary',
@@ -611,7 +613,7 @@ test('设置完整更新并校验自动切换锁定和订阅', async () => {
     autoSwitchCooldownUntil: null,
     updatedAt: new Date().toISOString(),
   };
-  setup.store.upsertHealthSnapshot(unlocked);
+  setup.store.health.upsertHealthSnapshot(unlocked);
   const noLock = await request(setup.app.callback())
     .put('/api/settings')
     .send({
@@ -620,7 +622,7 @@ test('设置完整更新并校验自动切换锁定和订阅', async () => {
       autoSwitchProfileUid: 'profile-main',
     });
   expect(noLock.body.error.code).toBe('AUTO_SWITCH_REQUIRES_LOCK');
-  setup.store.upsertHealthSnapshot({
+  setup.store.health.upsertHealthSnapshot({
     ...unlocked,
     lock: { locked: true, domain: 'entry.example.test', ip: '198.51.100.20' },
   });
@@ -650,7 +652,9 @@ test('诊断和 apply 异步执行并持久化任务结果', async () => {
     .send({});
   expect(diagnosed.status).toBe(202);
   await setup.taskEngine.waitForIdle();
-  expect(setup.store.getDiagnosis()?.candidates[0]?.eligible).toBe(true);
+  expect(setup.store.diagnoses.getDiagnosis()?.candidates[0]?.eligible).toBe(
+    true,
+  );
   const applied = await request(setup.app.callback())
     .post('/api/actions/apply')
     .send({ ip: '198.51.100.20' });
@@ -660,7 +664,7 @@ test('诊断和 apply 异步执行并持久化任务结果', async () => {
   );
   expect(task.body.data.task.status).toBe('succeeded');
   expect(setup.adapter.applyIp).toHaveBeenCalledWith('198.51.100.20');
-  expect(setup.store.getHealthSnapshot()?.status).toBe('unknown');
+  expect(setup.store.health.getHealthSnapshot()?.status).toBe('unknown');
 });
 
 test('任务生命周期按动作类型发布精确资源失效通知', async () => {
@@ -706,7 +710,7 @@ test('任务生命周期按动作类型发布精确资源失效通知', async ()
       },
     ]);
     if (item.path === 'health-check') {
-      const stored = setup.store.getTask(response.body.data.taskId)!;
+      const stored = setup.store.tasks.getTask(response.body.data.taskId)!;
       expect(stored.result).toMatchObject({ status: 'healthy' });
       expect(stored.result).not.toHaveProperty('snapshot');
       expect(stored.result).not.toHaveProperty('changes');
@@ -720,7 +724,7 @@ test('apply 拒绝无诊断、非法候选和注入输入', async () => {
     .post('/api/actions/apply')
     .send({ ip: '198.51.100.20' });
   expect(none.body.error.code).toBe('NO_DIAGNOSIS');
-  setup.store.replaceDiagnosis(diagnosis());
+  setup.store.diagnoses.replaceDiagnosis(diagnosis());
   for (const ip of [
     '--help',
     '198.51.100.20;touch /tmp/x',
@@ -773,12 +777,12 @@ test('后台稳定错误写入失败任务且 reset 关闭自动切换', async (
     .post('/api/actions/rollback')
     .send({});
   await setup.taskEngine.waitForIdle();
-  expect(setup.store.getTask(rollback.body.data.taskId)).toMatchObject({
+  expect(setup.store.tasks.getTask(rollback.body.data.taskId)).toMatchObject({
     status: 'failed',
     errorCode: 'NO_BACKUP',
     recoveryStatus: 'not_required',
   });
-  expect(setup.store.listEvents()[0]).toMatchObject({
+  expect(setup.store.events.listEvents()[0]).toMatchObject({
     type: 'rollback_failed',
     details: {
       errorCode: 'NO_BACKUP',
@@ -789,7 +793,7 @@ test('后台稳定错误写入失败任务且 reset 关闭自动切换', async (
     reason: 'task_failed',
     resources: [`task:${rollback.body.data.taskId}`, 'events'],
   });
-  setup.store.upsertHealthSnapshot({
+  setup.store.health.upsertHealthSnapshot({
     status: 'healthy',
     profile: legacyStatus().profile,
     lock: legacyStatus().lock,
@@ -800,17 +804,17 @@ test('后台稳定错误写入失败任务且 reset 关闭自动切换', async (
     autoSwitchCooldownUntil: '2026-09-08T04:05:00.000Z',
     updatedAt: '2026-09-08T04:00:00.000Z',
   });
-  setup.store.updateSettings({
+  setup.store.settings.updateSettings({
     autoSwitchEnabled: true,
     autoSwitchProfileUid: 'profile-main',
   });
   await request(setup.app.callback()).post('/api/actions/reset').send({});
   await setup.taskEngine.waitForIdle();
-  expect(setup.store.getSettings()).toMatchObject({
+  expect(setup.store.settings.getSettings()).toMatchObject({
     autoSwitchEnabled: false,
     autoSwitchProfileUid: null,
   });
-  expect(setup.store.getHealthSnapshot()).toMatchObject({
+  expect(setup.store.health.getHealthSnapshot()).toMatchObject({
     status: 'unknown',
     autoSwitchCooldownUntil: null,
   });
@@ -887,7 +891,7 @@ test('非法 JSON、请求超时和内部异常不泄露原文', async () => {
   });
   const timeout = await request(timeoutApp.callback()).get('/slow');
   expect(timeout.body.error.code).toBe('REQUEST_TIMEOUT');
-  vi.spyOn(setup.store, 'getSettings').mockImplementation(() => {
+  vi.spyOn(setup.store.settings, 'getSettings').mockImplementation(() => {
     throw new Error('/private/secret');
   });
   const internal = await request(setup.app.callback()).get('/api/settings');

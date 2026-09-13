@@ -1,4 +1,5 @@
-import type { SqliteStore } from '../../../storage/store.js';
+import type { HealthRepository } from '../../../storage/health-repository.js';
+import type { SettingsRepository } from '../../../storage/settings-repository.js';
 import { asStoredJson, type TaskHandler } from '../contracts.js';
 import { legacyFailure } from '../legacy-task-failure.js';
 import {
@@ -25,7 +26,13 @@ export class ResetTaskHandler implements TaskHandler {
    * @param adapter 重置和状态读取能力。
    */
   constructor(
-    private readonly store: SqliteStore,
+    private readonly store: {
+      health: Pick<
+        HealthRepository,
+        'getHealthSnapshot' | 'upsertHealthSnapshot'
+      >;
+      settings: Pick<SettingsRepository, 'updateSettings'>;
+    },
     private readonly adapter: Pick<
       ConfigurationOperations,
       'resetLock' | 'getStatus'
@@ -43,11 +50,11 @@ export class ResetTaskHandler implements TaskHandler {
     try {
       const result = await this.adapter.resetLock();
       await refreshHealthSnapshotAfterConfiguration(
-        this.store,
+        this.store.health,
         this.adapter,
         true,
       );
-      this.store.updateSettings({
+      this.store.settings.updateSettings({
         autoSwitchEnabled: false,
         autoSwitchProfileUid: null,
       });

@@ -2,8 +2,7 @@
 
 本文说明 Step 4 已实现的本地 SQLite 数据结构、约束、事务和维护规则。数据库结构以
 [`migrations.ts`](../apps/server/src/storage/migrations.ts) 为最终事实，数据访问行为以
-[`store.ts`](../apps/server/src/storage/store.ts) 为最终事实；本文不提前定义 Step 5 API
-或 Step 6 调度器尚未实现的数据。
+`storage/` 下的六个领域仓储为最终事实。
 
 ## 1. 设计目标与边界
 
@@ -11,11 +10,12 @@
 重启后可以恢复业务上下文。它不保存 Legacy Shell 生成的原始 TSV、Clash 配置正文、订阅正文、
 Mihomo 控制器密钥、报告路径或备份路径。
 
-存储层由三部分组成：
+存储层由四部分组成：
 
 1. `packages/shared` 中的 Zod Schema 定义领域对象并执行运行时校验。
-2. `SqliteStore` 将领域对象转换为 SQLite 字段，并集中管理事务、状态转换、脱敏和清理。
-3. SQLite 使用类型、`NOT NULL`、`CHECK`、主键和外键保护落盘数据。
+2. `SqliteConnection` 管理连接、迁移和事务，六个领域仓储分别完成字段映射、校验与清理。
+3. `SqliteStore` 组合共享连接和六个仓储，不提供跨领域的数据访问转发方法。
+4. SQLite 使用类型、`NOT NULL`、`CHECK`、主键和外键保护落盘数据。
 
 当前数据库包含 1 张迁移元数据表和 8 张业务表：
 
@@ -53,7 +53,7 @@ SQLite 在 WAL 模式下可能同时存在以下文件：
 
 ### 2.2 连接初始化
 
-`SqliteStore` 打开连接后依次设置：
+`SqliteConnection` 打开连接后依次设置：
 
 | 设置 | 当前值 | 作用 |
 | --- | --- | --- |
@@ -62,8 +62,15 @@ SQLite 在 WAL 模式下可能同时存在以下文件：
 | `busy_timeout` | `5000` | 数据库遇到短暂锁竞争时最多等待 5000 毫秒 |
 | `synchronous` | `NORMAL` | 在 WAL 模式下平衡本机应用的持久性与写入性能 |
 
-随后执行版本化迁移、补充缺失的默认策略，并恢复上次服务遗留的运行中任务。持有
-`SqliteStore` 的服务必须在退出时调用 `close()`，释放数据库文件句柄并完成安全关闭。
+随后执行版本化迁移；设置仓储补充缺失的默认策略。runtime 在其他服务可用前单独执行任务恢复，
+并在同一事务中协调任务、自动切换设置和关键事件。持有 `SqliteStore` 的服务必须在退出时调用
+`close()`，释放数据库文件句柄并完成安全关闭。
+
+### 2.3 领域仓储访问
+
+`SqliteStore` 只公开六个仓储以及 `transaction()`、`close()`。业务服务通过 `Pick<Repository, ...>`
+声明必要的方法，不依赖完整组合根。例如设置和任务分别通过 `store.settings.getSettings()`、
+`store.tasks.createTask()` 访问；跨仓储的启动恢复由 runtime 使用 `store.transaction()` 协调。
 
 ## 3. 实体关系
 
@@ -254,7 +261,7 @@ SQLite 的 `TEXT` 用于保存少量数组和扩展对象：
         ↓
 Zod：校验领域结构、枚举、IPv4 和跨字段规则
         ↓
-SqliteStore：转换时间、布尔值和 JSON，限制状态转换与事务边界
+领域仓储：转换时间、布尔值和 JSON，限制状态转换与领域事务边界
         ↓
 SQLite：执行 NOT NULL、CHECK、主键、唯一键和外键约束
 ```
@@ -499,9 +506,9 @@ stateDiagram-v2
 状态更新 SQL 在 `WHERE` 中包含允许的前置状态；未更新到记录时，存储层区分“任务不存在”和
 “当前状态不允许转换”。因此终态不能重复完成或重新启动。
 
-每次打开数据库时，`recoverInterruptedTasks()` 把遗留 `queued` 或 `running` 任务更新为 `interrupted`，写入
-结束时间、`SERVICE_RESTARTED` 错误码和“任务未自动重放”说明。成功、失败等已有终态保持不变，
-配置修改任务绝不因服务重启而自动执行第二次。
+runtime 启动恢复流程调用任务仓储的 `recoverInterruptedTasks()`，把遗留 `queued` 或 `running`
+任务更新为 `interrupted`，写入结束时间、`SERVICE_RESTARTED` 错误码和“任务未自动重放”说明。
+成功、失败等已有终态保持不变，配置修改任务绝不因服务重启而自动执行第二次。
 配置类任务在重启恢复时写入 `recovery_status=unknown`，其他任务保持 `null`。正常失败由
 Legacy 适配层根据修改边界、文件还原和 Mihomo 重载的真实结果写入恢复结论，前端不解析错误文案。
 `auto_switch` 复用同一任务表和状态转换：无不同候选以 `succeeded/no_change` 记录，诊断或修改前失败为
@@ -565,8 +572,8 @@ Legacy 适配层根据修改边界、文件还原和 Mihomo 重载的真实结�
 | 普通事件 | `retention = ordinary` 最近 1000 条 | 每次追加普通事件后 |
 | 关键事件 | `retention = critical` 最近 200 条 | 每次追加关键事件后 |
 
-排序均使用业务时间倒序，再使用自增 ID 倒序打破同一毫秒的并列。`pruneHistory()` 可以显式对
-全部站点和两类事件执行一次批量清理。
+排序均使用业务时间倒序，再使用自增 ID 倒序打破同一毫秒的并列。站点仓储和事件仓储分别提供
+`pruneHistory()`，用于显式清理各自管理的历史。
 
 以下数据永不参与数量清理：
 
@@ -577,7 +584,7 @@ Legacy 适配层根据修改边界、文件还原和 Mihomo 重载的真实结�
 - `tasks`。
 - `schema_migrations`。
 
-“永不参与历史清理”表示当前实现不会由 `pruneHistory()` 删除，并不等同于未来永远禁止新增
+“永不参与历史清理”表示当前实现不会由对应仓储的 `pruneHistory()` 删除，并不等同于未来永远禁止新增
 明确的数据生命周期策略；任何变化都必须通过新的需求、迁移和测试落地。
 
 ## 9. 查询示例

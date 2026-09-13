@@ -78,13 +78,13 @@ async function setup(
   const root = await mkdtemp(join(tmpdir(), 'clash-auto-switch-'));
   const store = new SqliteStore({ databasePath: join(root, 'state.db') });
   cleanups.push({ root, store });
-  store.updateSettings({
+  store.settings.updateSettings({
     autoSwitchEnabled: true,
     autoSwitchProfileUid: 'profile-main',
     autoSwitchCooldownMs: 300_000,
   });
-  store.upsertHealthSnapshot(snapshot());
-  if (options.diagnosis) store.replaceDiagnosis(options.diagnosis);
+  store.health.upsertHealthSnapshot(snapshot());
+  if (options.diagnosis) store.diagnoses.replaceDiagnosis(options.diagnosis);
   const notifier = new StatusNotificationCenter();
   const adapter = {
     diagnose: vi.fn(async () => options.diagnosis ?? diagnosis()),
@@ -170,12 +170,12 @@ test('满足条件时创建自动任务、应用最佳候选并持久化冷却',
   );
   expect(value.adapter.diagnose).not.toHaveBeenCalled();
   expect(value.adapter.applyIp).toHaveBeenCalledWith('198.51.100.21');
-  expect(value.store.listTasks()).toHaveLength(1);
-  expect(value.store.listTasks(1)[0]).toMatchObject({
+  expect(value.store.tasks.listTasks()).toHaveLength(1);
+  expect(value.store.tasks.listTasks(1)[0]).toMatchObject({
     type: 'auto_switch',
     status: 'succeeded',
   });
-  expect(value.store.getHealthSnapshot()).toMatchObject({
+  expect(value.store.health.getHealthSnapshot()).toMatchObject({
     status: 'healthy',
     lock: { locked: true, ip: '198.51.100.21' },
     consecutiveFailures: 0,
@@ -200,11 +200,11 @@ test('无合格候选以 no_change 完成并进入冷却', async () => {
   );
   expect(value.adapter.diagnose).toHaveBeenCalledOnce();
   expect(value.adapter.applyIp).not.toHaveBeenCalled();
-  expect(value.store.listTasks(1)[0]).toMatchObject({
+  expect(value.store.tasks.listTasks(1)[0]).toMatchObject({
     status: 'succeeded',
     result: { status: 'no_change' },
   });
-  expect(value.store.getSettings().autoSwitchEnabled).toBe(true);
+  expect(value.store.settings.getSettings().autoSwitchEnabled).toBe(true);
 });
 
 test('失败已恢复时保留自动开关并进入冷却', async () => {
@@ -230,12 +230,12 @@ test('失败已恢复时保留自动开关并进入冷却', async () => {
     },
     'run-2',
   );
-  expect(value.store.listTasks(1)[0]).toMatchObject({
+  expect(value.store.tasks.listTasks(1)[0]).toMatchObject({
     status: 'failed',
     recoveryStatus: 'recovered',
   });
-  expect(value.store.getSettings().autoSwitchEnabled).toBe(true);
-  expect(value.store.getHealthSnapshot()?.autoSwitchCooldownUntil).toBe(
+  expect(value.store.settings.getSettings().autoSwitchEnabled).toBe(true);
+  expect(value.store.health.getHealthSnapshot()?.autoSwitchCooldownUntil).toBe(
     '2026-09-11T04:06:00.000Z',
   );
 });
@@ -263,11 +263,11 @@ test('恢复失败时关闭自动切换', async () => {
     },
     'run-3',
   );
-  expect(value.store.getSettings()).toMatchObject({
+  expect(value.store.settings.getSettings()).toMatchObject({
     autoSwitchEnabled: false,
     autoSwitchProfileUid: null,
   });
-  expect(value.store.listTasks(1)[0]).toMatchObject({
+  expect(value.store.tasks.listTasks(1)[0]).toMatchObject({
     status: 'failed',
     recoveryStatus: 'recovery_failed',
   });
