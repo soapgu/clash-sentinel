@@ -65,7 +65,13 @@ process.once('uncaughtException', (error) => {
   void shutdown(1);
 });
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.once(signal, () => {
+  process.on(signal, () => {
+    if (shuttingDown) {
+      logger.warn('app:bootstrap', 'forced shutdown signal received', {
+        signal,
+      });
+      process.exit(signal === 'SIGINT' ? 130 : 143);
+    }
     logger.info('app:bootstrap', 'shutdown signal received', { signal });
     void shutdown();
   });
