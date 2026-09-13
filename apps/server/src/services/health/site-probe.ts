@@ -62,7 +62,8 @@ export function classifyProbeError(
 /** 使用显式直连 Agent 或本机 Clash ProxyAgent 执行 HTTP 探测。 */
 export class UndiciSiteProbe implements SiteProbe {
   private readonly directAgent = new Agent();
-  private readonly proxyAgents = new Map<string, ProxyAgent>();
+  private proxyAgent: { proxyUrl: string; agent: ProxyAgent } | null = null;
+  private readonly closingProxyAgents = new Set<Promise<void>>();
 
   /** 执行请求、完整消费响应体并输出稳定站点结果。 */
   async probe(request: SiteProbeRequest): Promise<SiteResult> {
@@ -107,21 +108,34 @@ export class UndiciSiteProbe implements SiteProbe {
 
   /** 关闭直连和代理连接池，允许服务进程干净退出。 */
   async close(): Promise<void> {
+    const proxyAgent = this.proxyAgent?.agent;
+    this.proxyAgent = null;
     await Promise.all([
       this.directAgent.close(),
-      ...[...this.proxyAgents.values()].map((agent) => agent.close()),
+      ...(proxyAgent ? [proxyAgent.close()] : []),
+      ...this.closingProxyAgents,
     ]);
   }
 
   /** 根据可选代理地址返回复用的 Undici Dispatcher。 */
   private dispatcher(proxyUrl: string | null): Dispatcher {
     if (!proxyUrl) return this.directAgent;
-    let agent = this.proxyAgents.get(proxyUrl);
-    if (!agent) {
-      agent = new ProxyAgent(proxyUrl);
-      this.proxyAgents.set(proxyUrl, agent);
-    }
+    if (this.proxyAgent?.proxyUrl === proxyUrl) return this.proxyAgent.agent;
+
+    const previousAgent = this.proxyAgent?.agent;
+    const agent = new ProxyAgent(proxyUrl);
+    this.proxyAgent = { proxyUrl, agent };
+    if (previousAgent) this.closeProxyAgent(previousAgent);
     return agent;
+  }
+
+  /** 异步关闭已被替换的代理连接池，并在内部消费关闭异常。 */
+  private closeProxyAgent(agent: ProxyAgent): void {
+    const closing = Promise.resolve()
+      .then(() => agent.close())
+      .catch(() => undefined);
+    this.closingProxyAgents.add(closing);
+    void closing.then(() => this.closingProxyAgents.delete(closing));
   }
 
   /** 创建不含虚假 HTTP 状态或耗时的失败结果。 */
