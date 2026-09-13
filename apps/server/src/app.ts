@@ -9,6 +9,16 @@ import { createApiRouter, type ApiRouterOptions } from './api/router.js';
 import { ApiError } from './api/errors.js';
 import { noopLogger, type AppLogger } from './logging.js';
 
+/** 与 koa-bodyparser 默认 JSON 类型保持一致。 */
+const JSON_CONTENT_TYPES = [
+  'application/json',
+  'application/json-patch+json',
+  'application/vnd.api+json',
+  'application/csp-report',
+  'application/scim+json',
+] as const;
+const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
 /** Koa 应用工厂依赖及可选运行参数。 */
 export interface CreateAppOptions extends ApiRouterOptions {
   /** 生产前端构建产物目录；省略时仅提供 API。 */
@@ -85,7 +95,22 @@ export function createApp(options: CreateAppOptions) {
           ? error
           : parserStatus === 400 || parserStatus === 413
             ? new ApiError(400, 'INVALID_JSON', '请求体不是合法 JSON')
-            : new ApiError(500, 'INTERNAL_ERROR', '后台处理失败');
+            : parserStatus === 415
+              ? new ApiError(
+                  415,
+                  'UNSUPPORTED_MEDIA_TYPE',
+                  '请求体必须使用 application/json',
+                )
+              : parserStatus !== null &&
+                  Number.isInteger(parserStatus) &&
+                  parserStatus >= 400 &&
+                  parserStatus < 500
+                ? new ApiError(
+                    parserStatus,
+                    'INVALID_REQUEST',
+                    '请求无法处理',
+                  )
+                : new ApiError(500, 'INTERNAL_ERROR', '后台处理失败');
       ctx.state.apiErrorCode = apiError.code;
       if (!(error instanceof ApiError)) ctx.state.unhandledError = error;
       ctx.status = apiError.status;
@@ -128,6 +153,23 @@ export function createApp(options: CreateAppOptions) {
     } finally {
       if (timer) clearTimeout(timer);
     }
+  });
+
+  app.use(async (ctx, next) => {
+    const hasBody =
+      ctx.request.length > 0 || Boolean(ctx.get('transfer-encoding'));
+    if (
+      (ctx.path === '/api' || ctx.path.startsWith('/api/')) &&
+      BODY_METHODS.has(ctx.method) &&
+      hasBody &&
+      !ctx.request.is([...JSON_CONTENT_TYPES])
+    )
+      throw new ApiError(
+        415,
+        'UNSUPPORTED_MEDIA_TYPE',
+        '请求体必须使用 application/json',
+      );
+    await next();
   });
 
   app.use(

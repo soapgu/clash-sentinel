@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
 import {
+  apiErrorCodeSchema,
   healthResponseSchema,
   healthSnapshotSchema,
   monitoringResponseSchema,
@@ -9,6 +10,14 @@ import {
   streamNotificationSchema,
   storedTaskSchema,
 } from './index.js';
+
+test('API 错误码包含请求格式与媒体类型错误', () => {
+  expect(apiErrorCodeSchema.safeParse('INVALID_REQUEST').success).toBe(true);
+  expect(apiErrorCodeSchema.safeParse('UNSUPPORTED_MEDIA_TYPE').success).toBe(
+    true,
+  );
+});
+
 test('拒绝错误的服务状态结构', () => {
   expect(
     healthResponseSchema.safeParse({

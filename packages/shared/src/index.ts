@@ -414,6 +414,8 @@ export type EventRecord = z.infer<typeof eventRecordSchema>;
 /** 校验 API 向客户端公开的稳定错误码。 */
 export const apiErrorCodeSchema = z.enum([
   'INVALID_JSON',
+  'INVALID_REQUEST',
+  'UNSUPPORTED_MEDIA_TYPE',
   'VALIDATION_ERROR',
   'NOT_FOUND',
   'ACTION_CONFLICT',

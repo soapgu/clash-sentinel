@@ -77,6 +77,7 @@
 | HTTP | 错误码 | 含义 |
 | --- | --- | --- |
 | `400` | `INVALID_JSON` | 请求体不是合法 JSON 或超过大小限制 |
+| `4xx` | `INVALID_REQUEST` | 中间件拒绝了无法处理的客户端请求 |
 | `400` | `VALIDATION_ERROR` | 路径、查询或请求体不符合 Schema |
 | `404` | `NOT_FOUND` | API 路由或指定任务不存在 |
 | `409` | `ACTION_CONFLICT` | 已有 Legacy 动作运行，详情含 `activeTaskId` |
@@ -84,6 +85,7 @@
 | `409` | `INVALID_CANDIDATE` | 诊断被跳过、IP 不在报告内或候选不合格 |
 | `409` | `AUTO_SWITCH_REQUIRES_LOCK` | 当前入口未受管锁定，不能开启自动切换 |
 | `409` | `PROFILE_MISMATCH` | 自动切换绑定 UID 与当前订阅不一致 |
+| `415` | `UNSUPPORTED_MEDIA_TYPE` | API 请求体不是支持的 JSON 类型 |
 | `504` | `REQUEST_TIMEOUT` | HTTP 请求处理超过 10 秒 |
 | `500` | `INTERNAL_ERROR` | 未知内部错误，响应不暴露原始异常 |
 

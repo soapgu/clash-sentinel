@@ -825,6 +825,54 @@ test('非法 JSON、请求超时和内部异常不泄露原文', async () => {
     .set('Content-Type', 'application/json')
     .send('{bad');
   expect(invalid.body.error.code).toBe('INVALID_JSON');
+  const unsupported = await request(setup.app.callback())
+    .put('/api/settings')
+    .set('Content-Type', 'text/plain')
+    .send('{}');
+  expect(unsupported.status).toBe(415);
+  expect(unsupported.body.error).toMatchObject({
+    code: 'UNSUPPORTED_MEDIA_TYPE',
+    message: '请求体必须使用 application/json',
+  });
+  const clientErrorApp = createApp({
+    store: setup.store,
+    taskEngine: setup.taskEngine,
+    scheduler: setup.scheduler,
+    notifier: setup.notifier,
+    logger,
+  });
+  clientErrorApp.use(() => {
+    throw Object.assign(new Error('/private/client-error'), { status: 422 });
+  });
+  const clientError = await request(clientErrorApp.callback()).get(
+    '/client-error',
+  );
+  expect(clientError.status).toBe(422);
+  expect(clientError.body.error).toMatchObject({
+    code: 'INVALID_REQUEST',
+    message: '请求无法处理',
+  });
+  expect(JSON.stringify(clientError.body)).not.toContain('/private');
+  expect(logs).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        level: 'warn',
+        scope: 'http:access',
+        metadata: expect.objectContaining({
+          status: 415,
+          errorCode: 'UNSUPPORTED_MEDIA_TYPE',
+        }),
+      }),
+      expect.objectContaining({
+        level: 'warn',
+        scope: 'http:access',
+        metadata: expect.objectContaining({
+          status: 422,
+          errorCode: 'INVALID_REQUEST',
+        }),
+      }),
+    ]),
+  );
   const timeoutApp = createApp({
     store: setup.store,
     taskEngine: setup.taskEngine,
