@@ -641,11 +641,113 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
 - [x] shared 根入口的 101 个公共导出无新增或缺失，服务端和 Web 无需修改导入方式。
 - [x] 数据库表结构、HTTP 响应结构、SSE 数据结构及自动切换安全边界保持不变。
 
-本地验证（2026-09-13）：完整 161 个 Vitest/Supertest 测试、TypeScript 类型检查、shared 文件 Prettier 检查和 `git diff --check` 均通过。生产构建和 Playwright 验收留待 Step 16 统一执行。
+本地验证（2026-09-13）：完整 161 个 Vitest/Supertest 测试、TypeScript 类型检查、shared 文件 Prettier 检查和 `git diff --check` 均通过。生产构建和 Playwright 验收留待 Step 20 统一执行。
 
-### Step 16：终端运行与 MVP 验收
+### Step 16：引入 TSyringe 重构运行时依赖装配
 
-**前置依赖**：Step 0 至 Step 15。
+**前置依赖**：Step 15。
+
+**状态**：未开始。
+
+使用 TSyringe 建立服务端 IoC 容器，以 `ApplicationRuntime` 作为唯一应用根对象，取代当前集中手工构造依赖的 `runtime.ts`。本步骤只重构依赖装配和生命周期，不改变数据库、HTTP API、SSE、任务执行及自动切换行为。
+
+#### 子步骤 16.1：建立 TSyringe 基础设施
+
+- 服务端加入 `tsyringe` 和 `reflect-metadata`，开启 `experimentalDecorators` 与 `emitDecoratorMetadata`。
+- 在服务端入口最先加载 `reflect-metadata`，确保使用装饰器的 ESM 模块求值前已初始化反射元数据。
+- 新增集中 token 定义，为 `AppLogger`、`ProcessEnv`、`ServerConfig`、运行路径、时钟、任务 Handler 注册表等编译后不存在的接口或值类型提供唯一 `Symbol`。
+- 新增应用容器工厂；TSyringe 默认容器只作为父容器和元数据入口，业务模块不得导入或调用默认 `container`。
+- 每次调用容器工厂都创建 child container，并在其中注册环境、配置、日志器及服务实现。
+- 进程级服务统一注册为 `Lifecycle.ContainerScoped`，不使用 `@singleton()`，保证生产容器内单例且不同测试容器之间不共享状态。
+
+#### 子步骤 16.2：改造构造函数注入
+
+- 领域服务和任务 Handler 使用 `@injectable()`，具体类依赖由 TSyringe 根据构造函数类型自动装配。
+- 将 `AutoSwitchService`、`HealthCheckService`、`HealthScheduler`、`TaskEngine` 等 options 对象构造函数改为逐项构造函数注入。
+- `AppLogger`、配置、运行路径、时钟和精简能力接口使用 `@inject(TOKENS.xxx)`。
+- 保留现有 `Pick` 能力边界；必要时为 Handler 使用的仓储能力定义独立 token，避免为了自动装配而扩大依赖权限。
+- `SqliteStore`、`LegacyAdapter`、`ClashProxyConfig`、`StatusNotificationCenter` 等包含配置转换、默认值或特殊参数的对象通过容器工厂 provider 创建。
+- 任务 Handler 继续组成完整、不可变的 `TaskHandlerRegistry`；注册表由容器工厂生成并注入 `TaskEngine`，不在 `TaskEngine` 内动态访问容器。
+- `createApp()` 和 `createApiRouter()` 继续接收明确依赖，不在 Koa 中间件、Router、服务、仓储或 Handler 中调用 `container.resolve()`。
+
+#### 子步骤 16.3：建立唯一应用根和生命周期
+
+- 新增 `ApplicationRuntime`，由容器注入 Store、自动切换服务、任务引擎、调度器、通知中心、探测器、配置和日志器。
+- `index.ts` 创建生产 child container，并且只解析一次 `ApplicationRuntime`；之后所有调用均为普通对象方法调用。
+- `ApplicationRuntime.start()` 按既定顺序执行启动恢复、创建 Koa 应用、监听本地端口和启动调度器。
+- `ApplicationRuntime.stop()` 保留现有关闭顺序：停止接收任务、停止调度器、关闭 SSE、停止 HTTP 服务、等待任务空闲、释放探测器和数据库。
+- 保留启动恢复失败时立即关闭已创建资源的行为，保证半初始化容器不会遗留 SQLite 或 Undici 句柄。
+- 容器 `dispose()` 只释放由容器持有且实现 `Disposable` 的最终资源；业务停机顺序仍由 `ApplicationRuntime.stop()` 显式控制。
+- 删除被取代的 `RuntimeDependencies`、`createRuntimeDependencies()` 和 `runtime.ts`，避免同时维护手工组合根与 IoC 组合根。
+
+#### 子步骤 16.4：测试隔离与架构约束
+
+- 单元测试继续优先直接构造被测服务，不要求通过容器运行。
+- 新增测试容器工厂；每个需要完整依赖图的集成测试创建独立 child container，覆盖配置、日志器、内存数据库和 Legacy mock，并在结束时调用 `dispose()`。
+- 添加容器冒烟测试，验证 `ApplicationRuntime`、全部任务 Handler 和关键服务可以成功解析，同一 child 内 `ContainerScoped` 对象保持相同实例。
+- 添加容器隔离测试，验证两个 child container 不共享 Store、Notifier、Scheduler、TaskEngine 或其他可变服务。
+- 添加依赖覆盖测试，验证测试 child 中注册的 mock 不污染父容器和其他测试。
+- 添加生命周期测试，覆盖正常启动关闭、启动恢复失败、监听失败、二次关闭和资源释放顺序。
+- 增加静态架构检查，限制 TSyringe 的 `container`/`resolve()` 只出现在 composition、入口和容器测试中。
+- 更新服务端相关测试中的构造参数，确保原有业务测试断言保持不变。
+
+**交付物**：
+
+- TSyringe 服务端依赖及 TypeScript 装饰器配置。
+- 集中 token、应用容器工厂和生产/测试 child container。
+- 使用构造函数注入的领域服务与任务 Handler。
+- 唯一应用根 `ApplicationRuntime` 及显式启动、停机编排。
+- 容器解析、隔离、覆盖和生命周期测试。
+- 删除原 `runtime.ts` 后的服务端组合根结构说明。
+
+**验收条件**：
+
+- [ ] `index.ts` 只从应用 child container 解析 `ApplicationRuntime`，业务模块不直接访问容器。
+- [ ] 所有进程级可变服务使用 `ContainerScoped`，未使用会跨 child 共享实例的 `@singleton()`。
+- [ ] 两个独立 child container 的 Store、Notifier、Scheduler 和 TaskEngine 实例互不共享。
+- [ ] 全部任务 Handler 可由容器组成完整注册表，任务类型覆盖保持不变。
+- [ ] 启动恢复及优雅关闭顺序与重构前一致，失败时不遗留数据库、HTTP、SSE、定时器或网络连接。
+- [ ] 单元测试可继续绕过容器直接构造服务，集成测试可通过 child container 覆盖依赖。
+- [ ] `runtime.ts`、`RuntimeDependencies` 和手工依赖装配被删除，不存在第二套组合根。
+- [ ] 数据库结构、共享 Schema、HTTP 响应、SSE 数据和自动切换安全边界无变化。
+- [ ] 全量 Vitest/Supertest 测试、类型检查、ESLint、Prettier、生产构建和 `git diff --check` 通过。
+
+**假设与默认选择**：
+
+- 采用“装饰器优先”方案：业务类使用 `@injectable()`，接口和值使用 `@inject(Symbol token)`。
+- 采用 `ApplicationRuntime` 类作为唯一应用根。
+- 生命周期集中注册为 `ContainerScoped`，不使用 `@singleton()` 和业务模块自注册。
+- 不启用文件扫描或基于 glob 的自动发现；模块通过正常 ESM import 加载，容器集中注册生命周期和特殊 provider。
+- 不将 TSyringe 容器注入业务对象，不引入 Service Locator。
+- 本步骤属于内部架构重构，不新增配置项、接口字段、数据库迁移或用户可见功能。
+
+### Step 17：全面完善服务端设计文档
+
+**前置依赖**：Step 16。
+
+**状态**：待规划。
+
+**任务、交付物与验收条件**：待后续细化。
+
+### Step 18：全面完善前端设计文档
+
+**前置依赖**：Step 17。
+
+**状态**：待规划。
+
+**任务、交付物与验收条件**：待后续细化。
+
+### Step 19：根据前端设计文档重构前端页面
+
+**前置依赖**：Step 18。
+
+**状态**：待规划。
+
+**任务、交付物与验收条件**：待前端设计文档完善后细化。
+
+### Step 20：终端运行与 MVP 验收
+
+**前置依赖**：Step 0 至 Step 19。
 
 **任务**：
 
