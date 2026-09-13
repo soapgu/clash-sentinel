@@ -14,7 +14,7 @@ import type {
 } from '@clash-sentinel/shared';
 import { settingsUpdateSchema } from '@clash-sentinel/shared';
 import { api, ApiClientError, type ManualAction } from './api.js';
-import { isDiagnosisFresh } from './freshness.js';
+import { CANDIDATE_FRESHNESS_MS, isDiagnosisFresh } from './freshness.js';
 import {
   dashboardQueries,
   queryKeys,
@@ -384,7 +384,9 @@ function CandidatePanel({
 }) {
   const fresh = isDiagnosisFresh(diagnosis ?? null, now) && !offline;
   const expiresAt = diagnosis
-    ? new Date(Date.parse(diagnosis.savedAt) + 30 * 60 * 1_000).toISOString()
+    ? new Date(
+        Date.parse(diagnosis.savedAt) + CANDIDATE_FRESHNESS_MS,
+      ).toISOString()
     : null;
   return (
     <section
