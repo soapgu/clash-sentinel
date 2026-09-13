@@ -8,6 +8,7 @@ export type LogScope =
   | 'task:service'
   | 'health:check'
   | 'health:scheduler'
+  | 'auto-switch:service'
   | 'settings:service'
   | 'legacy:adapter'
   | 'storage:sqlite';

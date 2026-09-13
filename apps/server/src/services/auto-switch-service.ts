@@ -1,5 +1,4 @@
 import type {
-  DiagnosisCandidate,
   HealthSnapshot,
   OperationResult,
   StoredJsonObject,
@@ -12,6 +11,10 @@ import type { DiagnosisRepository } from '../storage/diagnosis-repository.js';
 import type { HealthRepository } from '../storage/health-repository.js';
 import type { SettingsRepository } from '../storage/settings-repository.js';
 import type { HealthCheckSource } from './health/health-check.js';
+import {
+  canAutoSwitch,
+  selectAutoSwitchCandidate,
+} from './auto-switch-policy.js';
 
 /** 自动切换服务允许调用的最小 Legacy 诊断和应用能力。 */
 type AutoSwitchLegacyOperations = Pick<LegacyAdapter, 'diagnose' | 'applyIp'>;
@@ -144,18 +147,8 @@ export class AutoSwitchService {
   async execute(plan: AutoSwitchPlan): Promise<AutoSwitchExecution> {
     const settings = this.options.store.settings.getSettings();
     const snapshot = plan.snapshot;
-    if (
-      !settings.autoSwitchEnabled ||
-      !snapshot.profile ||
-      settings.autoSwitchProfileUid !== snapshot.profile.uid ||
-      snapshot.status !== 'entry_down' ||
-      (snapshot.internetSuccess ?? 0) < 2 ||
-      snapshot.consecutiveFailures < settings.entryFailureThreshold ||
-      (snapshot.autoSwitchCooldownUntil !== null &&
-        Date.parse(snapshot.autoSwitchCooldownUntil) > this.now().getTime())
-    )
+    if (!canAutoSwitch(settings, snapshot, this.now().getTime()))
       throw new Error('自动切换执行条件已失效');
-    if (!snapshot.lock.locked) throw new Error('自动切换计划缺少锁定入口');
     const lock = snapshot.lock;
     const diagnosis = plan.reuseDiagnosis
       ? this.options.store.diagnoses.getDiagnosis()
@@ -164,7 +157,7 @@ export class AutoSwitchService {
         );
     const changedResources: StreamResource[] = ['monitoring', 'status'];
     if (!plan.reuseDiagnosis) changedResources.push('candidates');
-    const candidate = this.selectCandidate(
+    const candidate = selectAutoSwitchCandidate(
       diagnosis?.candidates ?? [],
       lock.ip,
     );
@@ -218,7 +211,7 @@ export class AutoSwitchService {
       error,
       recoveryStatus,
     );
-    this.logger.info('health:scheduler', 'automatic handling completed', {
+    this.logger.info('auto-switch:service', 'automatic handling completed', {
       trigger: plan.source,
       parentId: plan.parentId,
       succeeded: false,
@@ -240,20 +233,6 @@ export class AutoSwitchService {
       recoveryStatus: 'unknown',
       changedResources: ['monitoring', 'status', 'candidates', 'settings'],
     };
-  }
-
-  /**
-   * 选择不同于当前 IP 且平均延迟最低的合格候选。
-   *
-   * @returns 最优候选；没有可用候选时返回 undefined。
-   */
-  private selectCandidate(candidates: DiagnosisCandidate[], currentIp: string) {
-    return candidates
-      .filter((item) => item.eligible && item.ip !== currentIp)
-      .sort(
-        (left, right) =>
-          left.averageMs - right.averageMs || left.ip.localeCompare(right.ip),
-      )[0];
   }
 
   /** @returns 冷却或安全关闭后的最终恢复状态及资源变化。 */
@@ -284,7 +263,7 @@ export class AutoSwitchService {
       this.writeCooldown(snapshot, cooldownMs, snapshot.recommendedIp);
     }
     if (error instanceof LegacyAdapterError)
-      this.logger.warn('health:scheduler', 'automatic handling rejected', {
+      this.logger.warn('auto-switch:service', 'automatic handling rejected', {
         errorCode: error.code,
         recoveryStatus: effectiveRecovery,
       });

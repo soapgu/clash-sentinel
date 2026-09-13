@@ -14,6 +14,10 @@ import type { ClashProxyConfig } from './proxy-config.js';
 import type { SiteProbe } from './site-probe.js';
 import { randomUUID } from 'node:crypto';
 import { noopLogger, type AppLogger } from '../../logging.js';
+import {
+  canAutoSwitch,
+  selectAutoSwitchCandidate,
+} from '../auto-switch-policy.js';
 
 /** 服务端固定且不可由 API 覆盖的六个健康探测目标。 */
 export const HEALTH_TARGETS = {
@@ -235,10 +239,11 @@ export class HealthCheckService {
         await this.options.legacy.diagnose(),
       );
       changes.candidatesUpdated = true;
-      snapshot.recommendedIp = this.selectCandidate(
-        diagnosis.candidates,
-        snapshot.lock.locked ? snapshot.lock.ip : null,
-      );
+      snapshot.recommendedIp =
+        selectAutoSwitchCandidate(
+          diagnosis.candidates,
+          snapshot.lock.locked ? snapshot.lock.ip : null,
+        )?.ip ?? null;
       saved = this.options.store.health.upsertHealthSnapshot(snapshot);
     }
     if (source === 'scheduled' && previous?.status !== saved.status) {
@@ -282,38 +287,12 @@ export class HealthCheckService {
     changes: HealthCheckChanges,
   ): AutoSwitchRequest | null {
     const settings = this.options.store.settings.getSettings();
-    if (
-      !settings.autoSwitchEnabled ||
-      !snapshot.profile ||
-      settings.autoSwitchProfileUid !== snapshot.profile.uid ||
-      snapshot.status !== 'entry_down' ||
-      (snapshot.internetSuccess ?? 0) < 2 ||
-      snapshot.consecutiveFailures < settings.entryFailureThreshold ||
-      (snapshot.autoSwitchCooldownUntil !== null &&
-        Date.parse(snapshot.autoSwitchCooldownUntil) > this.now().getTime()) ||
-      !snapshot.lock.locked
-    )
-      return null;
+    if (!canAutoSwitch(settings, snapshot, this.now().getTime())) return null;
     return {
       currentIp: snapshot.lock.ip,
       profileUid: snapshot.profile.uid,
       reuseDiagnosis: changes.candidatesUpdated,
     };
-  }
-
-  /** 从合格候选中稳定选择一个不同于当前锁定地址的最快 IP。 */
-  private selectCandidate(
-    candidates: Array<{ ip: string; eligible: boolean; averageMs: number }>,
-    currentIp: string | null,
-  ) {
-    return (
-      candidates
-        .filter((item) => item.eligible && item.ip !== currentIp)
-        .sort(
-          (left, right) =>
-            left.averageMs - right.averageMs || left.ip.localeCompare(right.ip),
-        )[0]?.ip ?? null
-    );
   }
 
   /** 记录订阅切换或同订阅内容更新，失败不影响健康快照。 */

@@ -46,7 +46,7 @@ export class AutoSwitchTaskHandler implements TaskHandler {
     const plan = this.service.restorePlan(input);
     try {
       const execution = await this.service.execute(plan);
-      logger.info('health:scheduler', 'automatic handling completed', {
+      logger.info('auto-switch:service', 'automatic handling completed', {
         taskId: task.id,
         trigger: plan.source,
         parentId: plan.parentId,
