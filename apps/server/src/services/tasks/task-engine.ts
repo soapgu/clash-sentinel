@@ -140,6 +140,13 @@ export class TaskEngine {
     this.activeCompletion = Promise.resolve().then(async () => {
       try {
         await this.runCreatedTask(task, submission, token);
+      } catch (error) {
+        this.logger.error('task:service', 'task chain aborted', {
+          taskType: task.type,
+          taskId: task.id,
+          ...submission.metadata,
+          error,
+        });
       } finally {
         this.release(token);
         this.activeCompletion = null;

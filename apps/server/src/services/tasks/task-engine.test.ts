@@ -9,6 +9,7 @@ import type {
   StreamNotification,
   TaskType,
 } from '@clash-sentinel/shared';
+import { noopLogger, type AppLogger } from '../../logging.js';
 import { SqliteStore } from '../../storage/store.js';
 import { StatusNotificationCenter } from '../status-notifier.js';
 import type {
@@ -65,7 +66,10 @@ function registry(
 }
 
 /** 创建隔离 SQLite、通知中心、协调器和待测 TaskEngine。 */
-async function setup(handlers: TaskHandlerRegistry) {
+async function setup(
+  handlers: TaskHandlerRegistry,
+  logger: AppLogger = noopLogger,
+) {
   const root = await mkdtemp(join(tmpdir(), 'task-engine-'));
   const store = new SqliteStore({ databasePath: join(root, 'state.db') });
   cleanups.push({ root, store });
@@ -73,7 +77,7 @@ async function setup(handlers: TaskHandlerRegistry) {
   const notifications: StreamNotification[] = [];
   notifier.subscribe((notification) => notifications.push(notification));
   notifications.length = 0;
-  const engine = new TaskEngine({ store, notifier, handlers });
+  const engine = new TaskEngine({ store, notifier, handlers, logger });
   return { store, notifier, notifications, engine };
 }
 
@@ -125,6 +129,66 @@ test('声明式后续任务复用租约并经过同一个引擎', async () => {
     { type: 'health_check', status: 'succeeded' },
   ]);
   expect(value.engine.hasActiveOperation()).toBe(false);
+});
+
+test('后续任务落库失败时终止当前链并保持引擎可用', async () => {
+  const databaseError = new Error('database is locked');
+  const errorLog = vi.fn<AppLogger['error']>();
+  const automatic = vi.fn(async () => ({
+    result: {},
+    changedResources: [] as const,
+  }));
+  const diagnose = vi.fn(async () => ({
+    result: {},
+    changedResources: [] as const,
+  }));
+  const value = await setup(
+    registry({
+      health_check: handler('health_check', async () => ({
+        result: { status: 'healthy' },
+        changedResources: ['status'],
+        nextTasks: [{ type: 'auto_switch' }],
+      })),
+      auto_switch: handler('auto_switch', automatic),
+      diagnose: handler('diagnose', diagnose),
+    }),
+    { ...noopLogger, error: errorLog },
+  );
+  const createTask = vi.spyOn(value.store, 'createTask');
+  const originalCreateTask = createTask.getMockImplementation()!;
+  createTask
+    .mockImplementationOnce(originalCreateTask)
+    .mockImplementationOnce(() => {
+      throw databaseError;
+    });
+
+  const rootTask = value.engine.enqueue('health_check', null, {
+    requestId: 'request-1',
+  });
+
+  await expect(value.engine.waitForIdle()).resolves.toBeUndefined();
+  expect(errorLog).toHaveBeenCalledWith(
+    'task:service',
+    'task chain aborted',
+    {
+      taskType: 'health_check',
+      taskId: rootTask.id,
+      requestId: 'request-1',
+      error: databaseError,
+    },
+  );
+  expect(value.store.getTask(rootTask.id)).toMatchObject({
+    status: 'succeeded',
+  });
+  expect(automatic).not.toHaveBeenCalled();
+  expect(value.engine.hasActiveOperation()).toBe(false);
+
+  const nextRootTask = value.engine.enqueue('diagnose');
+  await value.engine.waitForIdle();
+  expect(diagnose).toHaveBeenCalledOnce();
+  expect(value.store.getTask(nextRootTask.id)).toMatchObject({
+    status: 'succeeded',
+  });
 });
 
 test('瞬时任务执行 Handler 但不写任务、审计或生命周期通知', async () => {
