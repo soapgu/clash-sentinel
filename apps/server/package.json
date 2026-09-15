@@ -13,6 +13,8 @@
     "koa": "^3.0.0",
     "koa-bodyparser": "^4.4.1",
     "koa-static": "^5.0.0",
+    "reflect-metadata": "^0.2.2",
+    "tsyringe": "^4.10.0",
     "undici": "^8.10.2",
     "winston": "^3.19.0",
     "yaml": "^2.9.0",

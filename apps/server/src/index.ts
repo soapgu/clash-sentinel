@@ -1,3 +1,4 @@
+import 'reflect-metadata';
 import type { Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { createApp } from './app.js';

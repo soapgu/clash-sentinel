@@ -647,7 +647,7 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
 
 **前置依赖**：Step 15。
 
-**状态**：未开始。
+**状态**：进行中（16.1 已完成，16.2 至 16.4 未开始）。
 
 使用 TSyringe 建立服务端 IoC 容器，以 `ApplicationRuntime` 作为唯一应用根对象，取代当前集中手工构造依赖的 `runtime.ts`。本步骤只重构依赖装配和生命周期，不改变数据库、HTTP API、SSE、任务执行及自动切换行为。
 
@@ -659,10 +659,19 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
   - 原因三：服务端大量依赖 `Pick<>` 结构类型和接口（如任务 Handler 的仓储依赖、`HealthSchedulerOptions`），这些类型即使经过 tsc 也没有可用于解析具体实现的运行时类身份，任何环境都无法靠反射自动装配；全显式 token 是唯一可行路径。
 - 铺开前先做最小导入冒烟：验证纯 ESM + NodeNext 下 `tsyringe` 和 `reflect-metadata`（均为 CJS 包）的 named import 可用，以及显式 `@inject(token)` 在 tsx 与 Vitest 中的解析行为。
 - 在服务端入口最先加载 `reflect-metadata`，确保使用装饰器的 ESM 模块求值前已初始化反射元数据；同时在 `vitest.config.ts` 增加 `setupFiles`，保证每个测试模块图在装饰器类求值前同样完成加载。
-- 新增集中 token 定义，为 `AppLogger`、`ProcessEnv`、`ServerConfig`、运行路径、时钟、任务 Handler 注册表等编译后不存在的接口或值类型提供唯一 `Symbol`。token 注册完整实例（六个领域仓储、Legacy adapter 窄接口、聚合服务等），预计约 20 个；不为每个 `Pick` 形状单独定义 token 或 provider。
+- 新增集中 token 定义，为 `AppLogger`、`ProcessEnv`、`ServerConfig`、运行路径、时钟、任务 Handler 注册表等编译后不存在的接口或值类型提供唯一 `Symbol`。token 注册完整实例（六个领域仓储、Legacy adapter 窄接口、聚合服务等），不为每个 `Pick` 形状单独定义 token 或 provider。
 - 新增应用容器工厂；TSyringe 默认容器只作为父容器和元数据入口，业务模块不得导入或调用默认 `container`。
 - 每次调用容器工厂都创建 child container，并在其中注册环境、配置、日志器及服务实现。
 - 进程级服务统一注册为 `Lifecycle.ContainerScoped`，不使用 `@singleton()`，保证生产容器内单例且不同测试容器之间不共享状态。
+
+本地验证（2026-09-14）：安装 `tsyringe@4.10.0` 与 `reflect-metadata@0.2.2`，`apps/server/tsconfig.json` 只开启 `experimentalDecorators`。新增 `src/composition/tokens.ts`（21 个集中 `Symbol` token 及值类型映射）、`src/composition/container.ts`（`createAppContainer` child 容器工厂，注册环境、配置、日志器、运行路径和时钟五个值依赖）、`test-support/vitest-setup.ts` 与根 `vitest.config.ts` 的 `setupFiles`；服务端入口首行加载 `reflect-metadata`。三环境冒烟均通过：Vitest/esbuild（5 个容器测试，覆盖显式 `@inject` 构造注入、值 token 解析、`ContainerScoped` 同 child 同实例、跨 child 隔离和依赖覆盖不泄漏）、tsx/esbuild（临时脚本，已删除）和 `tsc` 构建产物（node 直接加载 dist）。
+
+实施确认的 TSyringe 4.10 API 事实（供 16.2 参考）：
+
+- 该版本没有 `token()` 工厂，也不存在 `registerValue()` 简写；`Symbol` 可直接作为 `InjectionToken` 注册，值注册写法为 `container.register(token, { useValue })`。
+- named import 中只有 `injectable`、`inject`、`container`、`Lifecycle` 等运行时导出可用（`DependencyContainer` 等类型须 `import type`）；且任何 tsyringe 导入前必须已加载 `reflect-metadata`。
+- 缺少显式 `@inject` 的有参构造在解析时抛 `TypeInfo not known`，而非静默降级——"全部参数显式注入"是可被测试固化的硬约束。
+- tsx 只对匹配 tsconfig `include`（`src/**/*.ts`）的文件应用装饰器编译选项，src 外的脚本会拒绝参数装饰器；业务代码均在 src 内，不受影响。
 
 #### 子步骤 16.2：改造构造函数注入
 

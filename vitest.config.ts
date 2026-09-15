@@ -6,5 +6,6 @@ export default defineConfig({
       'apps/server/**/*.test.ts',
       'apps/web/**/*.test.ts',
     ],
+    setupFiles: ['apps/server/test-support/vitest-setup.ts'],
   },
 });
