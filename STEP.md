@@ -653,28 +653,34 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
 
 #### 子步骤 16.1：建立 TSyringe 基础设施
 
-- 服务端加入 `tsyringe` 和 `reflect-metadata`，开启 `experimentalDecorators` 与 `emitDecoratorMetadata`。
-- 在服务端入口最先加载 `reflect-metadata`，确保使用装饰器的 ESM 模块求值前已初始化反射元数据。
-- 新增集中 token 定义，为 `AppLogger`、`ProcessEnv`、`ServerConfig`、运行路径、时钟、任务 Handler 注册表等编译后不存在的接口或值类型提供唯一 `Symbol`。
+- 服务端加入 `tsyringe` 和 `reflect-metadata`，只开启 `experimentalDecorators`，**不开启** `emitDecoratorMetadata`。
+  - 原因一：服务端 dev（tsx）与测试（Vitest 3）均基于 esbuild 转换，esbuild 不支持 `emitDecoratorMetadata`，元数据只会在 `tsc` 生产构建中生成，导致依赖反射自动装配的有参类在 dev 和测试的容器解析中失败。
+  - 原因二：显式 `@inject(token)` 由 TSyringe 按参数位置填入依赖信息，不依赖 `design:paramtypes` 元数据，因此本步骤不需要该编译选项。
+  - 原因三：服务端大量依赖 `Pick<>` 结构类型和接口（如任务 Handler 的仓储依赖、`HealthSchedulerOptions`），这些类型即使经过 tsc 也没有可用于解析具体实现的运行时类身份，任何环境都无法靠反射自动装配；全显式 token 是唯一可行路径。
+- 铺开前先做最小导入冒烟：验证纯 ESM + NodeNext 下 `tsyringe` 和 `reflect-metadata`（均为 CJS 包）的 named import 可用，以及显式 `@inject(token)` 在 tsx 与 Vitest 中的解析行为。
+- 在服务端入口最先加载 `reflect-metadata`，确保使用装饰器的 ESM 模块求值前已初始化反射元数据；同时在 `vitest.config.ts` 增加 `setupFiles`，保证每个测试模块图在装饰器类求值前同样完成加载。
+- 新增集中 token 定义，为 `AppLogger`、`ProcessEnv`、`ServerConfig`、运行路径、时钟、任务 Handler 注册表等编译后不存在的接口或值类型提供唯一 `Symbol`。token 注册完整实例（六个领域仓储、Legacy adapter 窄接口、聚合服务等），预计约 20 个；不为每个 `Pick` 形状单独定义 token 或 provider。
 - 新增应用容器工厂；TSyringe 默认容器只作为父容器和元数据入口，业务模块不得导入或调用默认 `container`。
 - 每次调用容器工厂都创建 child container，并在其中注册环境、配置、日志器及服务实现。
 - 进程级服务统一注册为 `Lifecycle.ContainerScoped`，不使用 `@singleton()`，保证生产容器内单例且不同测试容器之间不共享状态。
 
 #### 子步骤 16.2：改造构造函数注入
 
-- 领域服务和任务 Handler 使用 `@injectable()`，具体类依赖由 TSyringe 根据构造函数类型自动装配。
+- 领域服务和任务 Handler 使用 `@injectable()`；所有容器注入的构造参数一律显式 `@inject(TOKENS.xxx)`，不依赖反射元数据自动装配（理由见 16.1）。
 - 将 `AutoSwitchService`、`HealthCheckService`、`HealthScheduler`、`TaskEngine` 等 options 对象构造函数改为逐项构造函数注入。
-- `AppLogger`、配置、运行路径、时钟和精简能力接口使用 `@inject(TOKENS.xxx)`。
-- 保留现有 `Pick` 能力边界；必要时为 Handler 使用的仓储能力定义独立 token，避免为了自动装配而扩大依赖权限。
+- `AppLogger`、配置、运行路径、时钟和精简能力接口同样使用 `@inject(TOKENS.xxx)`。
+- 保留现有 `Pick` 能力边界：token 注册完整仓储实例，构造参数类型继续用 `Pick<>` 标注收窄，编译期依赖边界无损保留；不为自动装配扩大依赖权限，也不为每个 `Pick` 形状创建独立 token。
 - `SqliteStore`、`LegacyAdapter`、`ClashProxyConfig`、`StatusNotificationCenter` 等包含配置转换、默认值或特殊参数的对象通过容器工厂 provider 创建。
 - 任务 Handler 继续组成完整、不可变的 `TaskHandlerRegistry`；注册表由容器工厂生成并注入 `TaskEngine`，不在 `TaskEngine` 内动态访问容器。
 - `createApp()` 和 `createApiRouter()` 继续接收明确依赖，不在 Koa 中间件、Router、服务、仓储或 Handler 中调用 `container.resolve()`。
+- 工作量预期：经容器装配的服务构造参数改造后，相关集成测试 setup 需同步调整，是本步骤的主要工作量。
 
 #### 子步骤 16.3：建立唯一应用根和生命周期
 
 - 新增 `ApplicationRuntime`，由容器注入 Store、自动切换服务、任务引擎、调度器、通知中心、探测器、配置和日志器。
 - `index.ts` 创建生产 child container，并且只解析一次 `ApplicationRuntime`；之后所有调用均为普通对象方法调用。
 - `ApplicationRuntime.start()` 按既定顺序执行启动恢复、创建 Koa 应用、监听本地端口和启动调度器。
+- 容器解析阶段除 SQLite 外不得产生网络连接、定时器等副作用；启动恢复由 `ApplicationRuntime.start()` 显式编排（构造纯化），不在构造函数中执行。
 - `ApplicationRuntime.stop()` 保留现有关闭顺序：停止接收任务、停止调度器、关闭 SSE、停止 HTTP 服务、等待任务空闲、释放探测器和数据库。
 - 保留启动恢复失败时立即关闭已创建资源的行为，保证半初始化容器不会遗留 SQLite 或 Undici 句柄。
 - 容器 `dispose()` 只释放由容器持有且实现 `Disposable` 的最终资源；业务停机顺序仍由 `ApplicationRuntime.stop()` 显式控制。
@@ -682,13 +688,14 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
 
 #### 子步骤 16.4：测试隔离与架构约束
 
-- 单元测试继续优先直接构造被测服务，不要求通过容器运行。
+- 单元测试继续优先直接构造被测服务，不要求通过容器运行；手工 `new` 的单元测试不经容器解析，不受装饰器元数据影响，无需强制改造。
 - 新增测试容器工厂；每个需要完整依赖图的集成测试创建独立 child container，覆盖配置、日志器、内存数据库和 Legacy mock，并在结束时调用 `dispose()`。
 - 添加容器冒烟测试，验证 `ApplicationRuntime`、全部任务 Handler 和关键服务可以成功解析，同一 child 内 `ContainerScoped` 对象保持相同实例。
 - 添加容器隔离测试，验证两个 child container 不共享 Store、Notifier、Scheduler、TaskEngine 或其他可变服务。
 - 添加依赖覆盖测试，验证测试 child 中注册的 mock 不污染父容器和其他测试。
 - 添加生命周期测试，覆盖正常启动关闭、启动恢复失败、监听失败、二次关闭和资源释放顺序。
 - 增加静态架构检查，限制 TSyringe 的 `container`/`resolve()` 只出现在 composition、入口和容器测试中。
+- 将 `apps/server` 测试文件纳入 TypeScript 类型检查（当前 tsconfig 排除 `*.test.ts`）；本步骤大量调整测试构造参数，类型回归不应只靠运行时暴露。
 - 更新服务端相关测试中的构造参数，确保原有业务测试断言保持不变。
 
 **交付物**：
@@ -703,6 +710,7 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
 **验收条件**：
 
 - [ ] `index.ts` 只从应用 child container 解析 `ApplicationRuntime`，业务模块不直接访问容器。
+- [ ] `npm run dev`、`npm test` 与 `npm run build && npm start` 三个环境的容器解析行为一致，装饰器注入不依赖 `emitDecoratorMetadata`。
 - [ ] 所有进程级可变服务使用 `ContainerScoped`，未使用会跨 child 共享实例的 `@singleton()`。
 - [ ] 两个独立 child container 的 Store、Notifier、Scheduler 和 TaskEngine 实例互不共享。
 - [ ] 全部任务 Handler 可由容器组成完整注册表，任务类型覆盖保持不变。
@@ -714,7 +722,7 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
 
 **假设与默认选择**：
 
-- 采用“装饰器优先”方案：业务类使用 `@injectable()`，接口和值使用 `@inject(Symbol token)`。
+- 采用“装饰器 + 全显式 token”方案：业务类使用 `@injectable()`，所有容器注入的构造参数显式 `@inject(Symbol token)`，不使用反射元数据自动装配。原因：tsx 与 Vitest 基于 esbuild，不支持 `emitDecoratorMetadata`；且服务端大量 `Pick<>` 结构类型和接口本就没有运行时类身份，任何环境都无法靠反射解析。显式 `@inject(token)` 由 TSyringe 按参数位置填入依赖信息，无需 `design:paramtypes`，但 `reflect-metadata` 仍须保留并在入口（含测试 setupFiles）最先加载。
 - 采用 `ApplicationRuntime` 类作为唯一应用根。
 - 生命周期集中注册为 `ContainerScoped`，不使用 `@singleton()` 和业务模块自注册。
 - 不启用文件扫描或基于 glob 的自动发现；模块通过正常 ESM import 加载，容器集中注册生命周期和特殊 provider。
