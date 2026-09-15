@@ -1,3 +1,5 @@
+import { inject, injectable } from 'tsyringe';
+import { TOKENS } from '../../../composition/tokens.js';
 import type { HealthRepository } from '../../../storage/health-repository.js';
 import { asStoredJson, type TaskHandler } from '../contracts.js';
 import { legacyFailure } from '../legacy-task-failure.js';
@@ -7,6 +9,7 @@ import {
 } from './configuration-task-support.js';
 
 /** 执行候选 IP 应用，并在成功后刷新权威入口身份快照。 */
+@injectable()
 export class ApplyTaskHandler implements TaskHandler {
   /** 注册表使用的稳定任务类型。 */
   readonly type = 'apply' as const;
@@ -34,10 +37,12 @@ export class ApplyTaskHandler implements TaskHandler {
    * @param adapter 应用配置及读取状态的 Legacy 能力。
    */
   constructor(
+    @inject(TOKENS.healthRepository)
     private readonly store: Pick<
       HealthRepository,
       'getHealthSnapshot' | 'upsertHealthSnapshot'
     >,
+    @inject(TOKENS.legacyAdapter)
     private readonly adapter: Pick<
       ConfigurationOperations,
       'applyIp' | 'getStatus'

@@ -4,6 +4,8 @@ import type {
   SiteResult,
   SiteTarget,
 } from '@clash-sentinel/shared';
+import { inject, injectable } from 'tsyringe';
+import { TOKENS } from '../../composition/tokens.js';
 import type { DiagnosisRepository } from '../../storage/diagnosis-repository.js';
 import type { EventRepository } from '../../storage/event-repository.js';
 import type { HealthRepository } from '../../storage/health-repository.js';
@@ -35,31 +37,6 @@ export type HealthLegacyOperations = Pick<
   'getStatus' | 'healthCheck' | 'diagnose'
 >;
 
-/** 创建完整健康检测编排器所需的依赖。 */
-export interface HealthCheckServiceOptions {
-  /** SQLite 快照、历史、诊断和事件门面。 */
-  store: {
-    settings: Pick<SettingsRepository, 'getSettings' | 'updateSettings'>;
-    health: Pick<
-      HealthRepository,
-      'getHealthSnapshot' | 'upsertHealthSnapshot'
-    >;
-    sites: Pick<SiteRepository, 'appendSiteResult'>;
-    diagnoses: Pick<DiagnosisRepository, 'clearDiagnosis' | 'replaceDiagnosis'>;
-    events: Pick<EventRepository, 'appendEvent'>;
-  };
-  /** 可注入的六站 HTTP 探测器。 */
-  siteProbe: SiteProbe;
-  /** 从固定 Clash 配置解析代理端口的读取器。 */
-  proxyConfig: Pick<ClashProxyConfig, 'getProxyUrl'>;
-  /** 复用原始 Shell 状态机的 Legacy 能力。 */
-  legacy: HealthLegacyOperations;
-  /** 测试可注入的当前时间。 */
-  now?: () => Date;
-  /** 记录健康检测摘要和状态变化。 */
-  logger?: AppLogger;
-}
-
 /** 完整健康检测的调用来源。 */
 export type HealthCheckSource = 'manual' | 'scheduled';
 
@@ -87,14 +64,56 @@ export interface HealthCheckExecution {
 }
 
 /** 编排六站探测、入口判断、诊断持久化和综合快照。 */
+@injectable()
 export class HealthCheckService {
   private readonly now: () => Date;
   private readonly logger: AppLogger;
 
-  /** 使用隔离探测器、Legacy 能力和 SQLite 创建编排器。 */
-  constructor(private readonly options: HealthCheckServiceOptions) {
-    this.now = options.now ?? (() => new Date());
-    this.logger = options.logger ?? noopLogger;
+  /**
+   * 使用隔离探测器、Legacy 能力和 SQLite 创建编排器。
+   *
+   * @param settings 读写监测设置的设置仓储。
+   * @param health 读写健康快照的健康仓储。
+   * @param sites 追加站点历史的站点仓储。
+   * @param diagnoses 清理和替换诊断摘要的诊断仓储。
+   * @param events 追加健康事件的事件仓储。
+   * @param siteProbe 可注入的六站 HTTP 探测器。
+   * @param proxyConfig 从固定 Clash 配置解析代理端口的读取器。
+   * @param legacy 复用原始 Shell 状态机的 Legacy 能力。
+   * @param now 测试可注入的当前时间。
+   * @param logger 记录健康检测摘要和状态变化。
+   */
+  constructor(
+    @inject(TOKENS.settingsRepository)
+    private readonly settings: Pick<
+      SettingsRepository,
+      'getSettings' | 'updateSettings'
+    >,
+    @inject(TOKENS.healthRepository)
+    private readonly health: Pick<
+      HealthRepository,
+      'getHealthSnapshot' | 'upsertHealthSnapshot'
+    >,
+    @inject(TOKENS.siteRepository)
+    private readonly sites: Pick<SiteRepository, 'appendSiteResult'>,
+    @inject(TOKENS.diagnosisRepository)
+    private readonly diagnoses: Pick<
+      DiagnosisRepository,
+      'clearDiagnosis' | 'replaceDiagnosis'
+    >,
+    @inject(TOKENS.eventRepository)
+    private readonly events: Pick<EventRepository, 'appendEvent'>,
+    @inject(TOKENS.siteProbe)
+    private readonly siteProbe: SiteProbe,
+    @inject(TOKENS.clashProxyConfig)
+    private readonly proxyConfig: Pick<ClashProxyConfig, 'getProxyUrl'>,
+    @inject(TOKENS.legacyAdapter)
+    private readonly legacy: HealthLegacyOperations,
+    @inject(TOKENS.dateClock) now: () => Date = () => new Date(),
+    @inject(TOKENS.appLogger) logger: AppLogger = noopLogger,
+  ) {
+    this.now = now;
+    this.logger = logger;
   }
 
   /**
@@ -138,10 +157,10 @@ export class HealthCheckService {
       eventAppended: false,
       settingsUpdated: false,
     };
-    const settings = this.options.store.settings.getSettings();
+    const settings = this.settings.getSettings();
     const directPromise = Promise.all(
       (['baidu', 'taobao', 'tencent'] as const).map((target) =>
-        this.options.siteProbe.probe({
+        this.siteProbe.probe({
           target,
           url: HEALTH_TARGETS[target],
           timeoutMs: settings.requestTimeoutMs,
@@ -149,12 +168,12 @@ export class HealthCheckService {
         }),
       ),
     );
-    const proxyUrlPromise = this.options.proxyConfig.getProxyUrl();
+    const proxyUrlPromise = this.proxyConfig.getProxyUrl();
     const proxyUrl = await proxyUrlPromise;
     const proxyPromise = proxyUrl
       ? Promise.all(
           (['google', 'github', 'openai_status'] as const).map((target) =>
-            this.options.siteProbe.probe({
+            this.siteProbe.probe({
               target,
               url: HEALTH_TARGETS[target],
               timeoutMs: settings.requestTimeoutMs,
@@ -181,10 +200,10 @@ export class HealthCheckService {
         errorType: result.errorType,
       });
     for (const result of [...directResults, ...proxyResults])
-      this.options.store.sites.appendSiteResult(result);
+      this.sites.appendSiteResult(result);
     changes.sitesUpdated = true;
 
-    const previous = this.options.store.health.getHealthSnapshot();
+    const previous = this.health.getHealthSnapshot();
     const status = await this.readStatusSafely();
     const directSuccess = directResults.filter((item) => item.reachable).length;
     let snapshot = this.baseSnapshot(previous, status, directSuccess);
@@ -194,7 +213,7 @@ export class HealthCheckService {
         : null;
 
     if (directSuccess >= 2 && status?.lock.locked) {
-      const legacyHealth = await this.options.legacy.healthCheck(
+      const legacyHealth = await this.legacy.healthCheck(
         settings.entryFailureThreshold,
       );
       snapshot = {
@@ -208,17 +227,16 @@ export class HealthCheckService {
       identityChanged = legacyHealth.identityChanged ?? identityChanged;
     }
     if (identityChanged) {
-      if (this.options.store.diagnoses.clearDiagnosis())
-        changes.candidatesUpdated = true;
+      if (this.diagnoses.clearDiagnosis()) changes.candidatesUpdated = true;
       snapshot.consecutiveFailures = 0;
       snapshot.recommendedIp = null;
       if (identityChanged === 'profile') {
-        const currentSettings = this.options.store.settings.getSettings();
+        const currentSettings = this.settings.getSettings();
         if (
           currentSettings.autoSwitchEnabled ||
           currentSettings.autoSwitchProfileUid !== null
         ) {
-          this.options.store.settings.updateSettings({
+          this.settings.updateSettings({
             autoSwitchEnabled: false,
             autoSwitchProfileUid: null,
           });
@@ -232,11 +250,11 @@ export class HealthCheckService {
     }
 
     snapshot.status = this.finalStatus(snapshot, status, proxyResults);
-    let saved = this.options.store.health.upsertHealthSnapshot(snapshot);
+    let saved = this.health.upsertHealthSnapshot(snapshot);
     changes.statusUpdated = true;
     if (snapshot.status === 'entry_down' && previous?.status !== 'entry_down') {
-      const diagnosis = this.options.store.diagnoses.replaceDiagnosis(
-        await this.options.legacy.diagnose(),
+      const diagnosis = this.diagnoses.replaceDiagnosis(
+        await this.legacy.diagnose(),
       );
       changes.candidatesUpdated = true;
       snapshot.recommendedIp =
@@ -244,7 +262,7 @@ export class HealthCheckService {
           diagnosis.candidates,
           snapshot.lock.locked ? snapshot.lock.ip : null,
         )?.ip ?? null;
-      saved = this.options.store.health.upsertHealthSnapshot(snapshot);
+      saved = this.health.upsertHealthSnapshot(snapshot);
     }
     if (source === 'scheduled' && previous?.status !== saved.status) {
       changes.eventAppended =
@@ -286,7 +304,7 @@ export class HealthCheckService {
     snapshot: HealthSnapshot,
     changes: HealthCheckChanges,
   ): AutoSwitchRequest | null {
-    const settings = this.options.store.settings.getSettings();
+    const settings = this.settings.getSettings();
     if (!canAutoSwitch(settings, snapshot, this.now().getTime())) return null;
     return {
       currentIp: snapshot.lock.ip,
@@ -301,7 +319,7 @@ export class HealthCheckService {
     snapshot: HealthSnapshot,
   ) {
     try {
-      this.options.store.events.appendEvent({
+      this.events.appendEvent({
         type: change === 'profile' ? 'profile_changed' : 'subscription_updated',
         severity: 'warning',
         retention: 'ordinary',
@@ -324,7 +342,7 @@ export class HealthCheckService {
   /** 状态命令失败时保留站点结果并把身份降级为未知。 */
   private async readStatusSafely(): Promise<LegacyStatus | null> {
     try {
-      return await this.options.legacy.getStatus();
+      return await this.legacy.getStatus();
     } catch (error) {
       this.logger.warn('health:check', 'status read failed', {
         errorCode:
@@ -399,7 +417,7 @@ export class HealthCheckService {
     snapshot: HealthSnapshot,
   ): boolean {
     try {
-      this.options.store.events.appendEvent({
+      this.events.appendEvent({
         type: 'health_status_changed',
         severity: ['internet_down', 'entry_down', 'proxy_error'].includes(
           snapshot.status,

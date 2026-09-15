@@ -36,6 +36,8 @@ export const TOKENS = {
   runtimePaths: Symbol('RuntimePaths'),
   /** Unix 毫秒时钟。 */
   clock: Symbol('Clock'),
+  /** Date 对象时钟。 */
+  dateClock: Symbol('DateClock'),
   /** SQLite 数据访问门面。 */
   sqliteStore: Symbol('SqliteStore'),
   /** 设置仓储。 */
@@ -77,6 +79,7 @@ export interface TokenTypes {
   [TOKENS.serverConfig]: ServerConfig;
   [TOKENS.runtimePaths]: RuntimePaths;
   [TOKENS.clock]: () => number;
+  [TOKENS.dateClock]: () => Date;
   [TOKENS.sqliteStore]: SqliteStore;
   [TOKENS.settingsRepository]: SettingsRepository;
   [TOKENS.healthRepository]: HealthRepository;

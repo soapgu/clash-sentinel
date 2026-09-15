@@ -2,6 +2,8 @@ import type {
   MonitoringSnapshot,
   StreamResource,
 } from '@clash-sentinel/shared';
+import { inject, injectable } from 'tsyringe';
+import { TOKENS } from '../../composition/tokens.js';
 import type { EventRepository } from '../../storage/event-repository.js';
 import type { SettingsRepository } from '../../storage/settings-repository.js';
 import type { StatusNotifier } from '../status-notifier.js';
@@ -9,24 +11,8 @@ import { randomUUID } from 'node:crypto';
 import { noopLogger, type AppLogger } from '../../logging.js';
 import type { TaskEngine } from '../tasks/task-engine.js';
 
-/** 定时健康检测调度器依赖。 */
-export interface HealthSchedulerOptions {
-  /** 动态读取监测开关和周期的 SQLite 门面。 */
-  store: {
-    settings: Pick<SettingsRepository, 'getSettings'>;
-    events: Pick<EventRepository, 'appendEvent'>;
-  };
-  /** 向 Web 客户端发布调度运行态和快照失效通知。 */
-  notifier: StatusNotifier;
-  /** 返回当前 Unix 毫秒时间；测试可注入可控时钟。 */
-  now?: () => number;
-  /** 记录调度计划、执行、跳过和失败。 */
-  logger?: AppLogger;
-  /** 在定时检测已有租约中执行瞬时健康任务的统一引擎。 */
-  taskEngine: Pick<TaskEngine, 'tryRunScheduledTask' | 'getActiveTaskId'>;
-}
-
 /** 启动即检查、按最新设置递归调度且不会重入的健康调度器。 */
+@injectable()
 export class HealthScheduler {
   private timer: NodeJS.Timeout | null = null;
   private currentRun: Promise<void> | null = null;
@@ -38,10 +24,31 @@ export class HealthScheduler {
   private readonly now: () => number;
   private readonly logger: AppLogger;
 
-  /** @param options 存储、任务引擎、通知器和可选时钟。 */
-  constructor(private readonly options: HealthSchedulerOptions) {
-    this.now = options.now ?? Date.now;
-    this.logger = options.logger ?? noopLogger;
+  /**
+   * @param settings 动态读取监测开关和周期的设置仓储。
+   * @param events 追加调度失败事件的事件仓储。
+   * @param notifier 向 Web 客户端发布调度运行态和快照失效通知。
+   * @param taskEngine 在定时检测已有租约中执行瞬时健康任务的统一引擎。
+   * @param now 返回当前 Unix 毫秒时间；测试可注入可控时钟。
+   * @param logger 记录调度计划、执行、跳过和失败。
+   */
+  constructor(
+    @inject(TOKENS.settingsRepository)
+    private readonly settings: Pick<SettingsRepository, 'getSettings'>,
+    @inject(TOKENS.eventRepository)
+    private readonly events: Pick<EventRepository, 'appendEvent'>,
+    @inject(TOKENS.statusNotificationCenter)
+    private readonly notifier: StatusNotifier,
+    @inject(TOKENS.taskEngine)
+    private readonly taskEngine: Pick<
+      TaskEngine,
+      'tryRunScheduledTask' | 'getActiveTaskId'
+    >,
+    @inject(TOKENS.clock) now: () => number = Date.now,
+    @inject(TOKENS.appLogger) logger: AppLogger = noopLogger,
+  ) {
+    this.now = now;
+    this.logger = logger;
   }
 
   /**
@@ -50,7 +57,7 @@ export class HealthScheduler {
    * @returns 结合最新设置与调度器内存时间生成的新快照。
    */
   getSnapshot(): MonitoringSnapshot {
-    const enabled = this.options.store.settings.getSettings().monitoringEnabled;
+    const enabled = this.settings.getSettings().monitoringEnabled;
     const state = this.currentRun
       ? 'running'
       : enabled
@@ -63,7 +70,7 @@ export class HealthScheduler {
       lastStartedAt: this.lastStartedAt,
       lastCompletedAt: this.lastCompletedAt,
       nextRunAt,
-      activeTaskId: this.options.taskEngine.getActiveTaskId(),
+      activeTaskId: this.taskEngine.getActiveTaskId(),
     };
   }
 
@@ -88,14 +95,14 @@ export class HealthScheduler {
   /** 尝试占用定时槽；冲突时静默跳过并安排下一周期。 */
   private runTick(): void {
     if (this.stopped) return;
-    const settings = this.options.store.settings.getSettings();
+    const settings = this.settings.getSettings();
     if (!settings.monitoringEnabled) {
       this.logger.debug('health:scheduler', 'monitoring disabled');
       this.schedule(settings.checkIntervalMs);
       return;
     }
     const runId = randomUUID();
-    const currentRun = this.options.taskEngine.tryRunScheduledTask(
+    const currentRun = this.taskEngine.tryRunScheduledTask(
       { type: 'health_check' },
       runId,
     );
@@ -110,7 +117,7 @@ export class HealthScheduler {
     const startedAt = this.now();
     this.logger.info('health:scheduler', 'run started', { runId });
     this.nextTickAt = null;
-    this.options.notifier.publish('monitoring_started', ['monitoring']);
+    this.notifier.publish('monitoring_started', ['monitoring']);
     const changedResources: StreamResource[] = ['monitoring'];
     let failed = false;
     this.currentRun = currentRun
@@ -148,10 +155,8 @@ export class HealthScheduler {
         this.lastCompletedAt = new Date(this.now()).toISOString();
         this.currentRun = null;
         if (!this.stopped)
-          this.schedule(
-            this.options.store.settings.getSettings().checkIntervalMs,
-          );
-        this.options.notifier.publish('monitoring_completed', [
+          this.schedule(this.settings.getSettings().checkIntervalMs);
+        this.notifier.publish('monitoring_completed', [
           ...new Set(changedResources),
         ]);
         if (!failed)
@@ -182,7 +187,7 @@ export class HealthScheduler {
   /** 记录不包含原始异常、路径或响应正文的定时轮次失败。 */
   private appendFailureEvent(): boolean {
     try {
-      this.options.store.events.appendEvent({
+      this.events.appendEvent({
         type: 'scheduled_health_failed',
         severity: 'error',
         retention: 'ordinary',

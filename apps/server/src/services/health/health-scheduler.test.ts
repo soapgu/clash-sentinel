@@ -60,11 +60,12 @@ async function setup(
       })(),
     ),
   };
-  const scheduler = new HealthScheduler({
-    store,
+  const scheduler = new HealthScheduler(
+    store.settings,
+    store.events,
     notifier,
     taskEngine,
-  });
+  );
   return {
     store,
     healthCheck,

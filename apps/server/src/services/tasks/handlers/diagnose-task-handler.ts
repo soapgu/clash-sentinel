@@ -1,9 +1,12 @@
+import { inject, injectable } from 'tsyringe';
+import { TOKENS } from '../../../composition/tokens.js';
 import type { LegacyAdapter } from '../../../legacy/adapter.js';
 import type { DiagnosisRepository } from '../../../storage/diagnosis-repository.js';
 import { asStoredJson, type TaskHandler } from '../contracts.js';
 import { legacyFailure } from '../legacy-task-failure.js';
 
 /** 执行严格诊断并用最新结果原子替换持久化候选报告。 */
+@injectable()
 export class DiagnoseTaskHandler implements TaskHandler {
   /** 注册表使用的稳定任务类型。 */
   readonly type = 'diagnose' as const;
@@ -22,7 +25,9 @@ export class DiagnoseTaskHandler implements TaskHandler {
    * @param adapter 严格诊断 Legacy 能力。
    */
   constructor(
+    @inject(TOKENS.diagnosisRepository)
     private readonly store: Pick<DiagnosisRepository, 'replaceDiagnosis'>,
+    @inject(TOKENS.legacyAdapter)
     private readonly adapter: Pick<LegacyAdapter, 'diagnose'>,
   ) {}
 

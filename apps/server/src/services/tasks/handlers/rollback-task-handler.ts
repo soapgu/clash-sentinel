@@ -1,3 +1,5 @@
+import { inject, injectable } from 'tsyringe';
+import { TOKENS } from '../../../composition/tokens.js';
 import type { HealthRepository } from '../../../storage/health-repository.js';
 import { asStoredJson, type TaskHandler } from '../contracts.js';
 import { legacyFailure } from '../legacy-task-failure.js';
@@ -7,6 +9,7 @@ import {
 } from './configuration-task-support.js';
 
 /** 回滚最近一次受管配置，并在成功后刷新权威入口身份。 */
+@injectable()
 export class RollbackTaskHandler implements TaskHandler {
   /** 注册表使用的稳定任务类型。 */
   readonly type = 'rollback' as const;
@@ -25,10 +28,12 @@ export class RollbackTaskHandler implements TaskHandler {
    * @param adapter 回滚和状态读取能力。
    */
   constructor(
+    @inject(TOKENS.healthRepository)
     private readonly store: Pick<
       HealthRepository,
       'getHealthSnapshot' | 'upsertHealthSnapshot'
     >,
+    @inject(TOKENS.legacyAdapter)
     private readonly adapter: Pick<
       ConfigurationOperations,
       'rollback' | 'getStatus'

@@ -6,8 +6,10 @@ import type {
   TaskType,
 } from '@clash-sentinel/shared';
 import { taskTypeSchema } from '@clash-sentinel/shared';
+import { inject, injectable } from 'tsyringe';
 import { ApiError } from '../../api/errors.js';
 import { noopLogger, type AppLogger } from '../../logging.js';
+import { TOKENS } from '../../composition/tokens.js';
 import type { EventRepository } from '../../storage/event-repository.js';
 import type { TaskRepository } from '../../storage/task-repository.js';
 import type { StatusNotifier } from '../status-notifier.js';
@@ -30,24 +32,6 @@ export interface TaskLogContext {
   requestId?: string;
 }
 
-/** 创建通用任务引擎需要的横切依赖。 */
-export interface TaskEngineOptions {
-  /** 持久化任务状态、结果和审计事件的 SQLite 门面。 */
-  store: {
-    tasks: Pick<
-      TaskRepository,
-      'createTask' | 'startTask' | 'completeTask' | 'failTask'
-    >;
-    events: Pick<EventRepository, 'appendEvent'>;
-  };
-  /** 发布任务生命周期及业务资源失效通知。 */
-  notifier: StatusNotifier;
-  /** 覆盖全部任务类型且在运行时不可变的 Handler 注册表。 */
-  handlers: TaskHandlerRegistry;
-  /** 可选统一日志器；测试省略时使用空实现。 */
-  logger?: AppLogger;
-}
-
 /** 不写任务生命周期的内部执行结果。 */
 export type TransientTaskOutcome =
   | { succeeded: true; changedResources: StreamResource[] }
@@ -63,6 +47,7 @@ type ActiveOperation =
   { kind: 'task'; taskId: string } | { kind: 'scheduled_health' };
 
 /** 只负责任务生命周期、互斥、持久化、审计、通知和关闭的通用引擎。 */
+@injectable()
 export class TaskEngine {
   /** 记录任务生命周期和引擎异常的统一日志器。 */
   private readonly logger: AppLogger;
@@ -78,12 +63,29 @@ export class TaskEngine {
   /**
    * 创建任务引擎并立即验证注册表完整性。
    *
-   * @param options 存储、协调器、通知器、Handler 和日志依赖。
+   * @param tasks 持久化任务生命周期的任务仓储。
+   * @param events 追加任务审计事件的事件仓储。
+   * @param notifier 发布任务生命周期通知的通知器。
+   * @param handlers 覆盖全部任务类型且不可变的 Handler 注册表。
+   * @param logger 可选统一日志器；测试省略时使用空实现。
    * @throws Handler 缺失或注册键与声明类型不一致时拒绝启动。
    */
-  constructor(private readonly options: TaskEngineOptions) {
-    this.logger = options.logger ?? noopLogger;
-    this.validateHandlers(options.handlers);
+  constructor(
+    @inject(TOKENS.taskRepository)
+    private readonly tasks: Pick<
+      TaskRepository,
+      'createTask' | 'startTask' | 'completeTask' | 'failTask'
+    >,
+    @inject(TOKENS.eventRepository)
+    private readonly events: Pick<EventRepository, 'appendEvent'>,
+    @inject(TOKENS.statusNotificationCenter)
+    private readonly notifier: StatusNotifier,
+    @inject(TOKENS.taskHandlerRegistry)
+    private readonly handlers: TaskHandlerRegistry,
+    @inject(TOKENS.appLogger) logger: AppLogger = noopLogger,
+  ) {
+    this.logger = logger;
+    this.validateHandlers(this.handlers);
   }
 
   /** @returns 当前占用全局槽的任务 UUID；空闲或定时检测时返回 null。 */
@@ -206,7 +208,7 @@ export class TaskEngine {
       input: submission.input ?? null,
       persistence: 'transient',
     };
-    const handler = this.options.handlers[task.type];
+    const handler = this.handlers[task.type];
     let execution: TaskExecutionResult;
     try {
       const input = handler.parseInput(task.input);
@@ -257,7 +259,7 @@ export class TaskEngine {
     submission: TaskSubmission,
     token: symbol,
   ): Promise<StreamResource[]> {
-    const handler = this.options.handlers[task.type];
+    const handler = this.handlers[task.type];
     const identity: TaskExecutionIdentity = {
       id: task.id,
       type: task.type,
@@ -282,7 +284,7 @@ export class TaskEngine {
    * @returns 新创建的任务记录。
    */
   private createTask(submission: TaskSubmission) {
-    const task = this.options.store.tasks.createTask(
+    const task = this.tasks.createTask(
       submission.type,
       submission.input ?? null,
     );
@@ -291,7 +293,7 @@ export class TaskEngine {
       taskId: task.id,
       ...submission.metadata,
     });
-    this.options.notifier.publish('task_queued', [
+    this.notifier.publish('task_queued', [
       this.taskResource(task.id),
       ...(submission.queuedResources ?? []),
     ]);
@@ -321,22 +323,20 @@ export class TaskEngine {
   > {
     const startedAt = Date.now();
     try {
-      this.options.store.tasks.startTask(task.id);
+      this.tasks.startTask(task.id);
       this.logger.info('task:service', 'started', {
         taskType: task.type,
         taskId: task.id,
         ...submission.metadata,
       });
-      this.options.notifier.publish('task_started', [
-        this.taskResource(task.id),
-      ]);
+      this.notifier.publish('task_started', [this.taskResource(task.id)]);
       const input = handler.parseInput(task.input);
       const execution = await handler.execute({
         task: identity,
         input,
         logger: this.logger,
       });
-      this.options.store.tasks.completeTask(task.id, execution.result);
+      this.tasks.completeTask(task.id, execution.result);
       const eventAppended = this.appendEventSafely(
         task,
         handler,
@@ -346,7 +346,7 @@ export class TaskEngine {
       const changedResources = [...new Set(execution.changedResources)];
       if (eventAppended && !changedResources.includes('events'))
         changedResources.push('events');
-      this.options.notifier.publish('task_succeeded', [
+      this.notifier.publish('task_succeeded', [
         this.taskResource(task.id),
         ...changedResources,
       ]);
@@ -361,7 +361,7 @@ export class TaskEngine {
       const failure = await this.resolveFailure(handler, identity, error);
       let failedPersisted = false;
       try {
-        this.options.store.tasks.failTask(
+        this.tasks.failTask(
           task.id,
           failure.code,
           failure.message,
@@ -383,7 +383,7 @@ export class TaskEngine {
       if (eventAppended && !changedResources.includes('events'))
         changedResources.push('events');
       if (failedPersisted)
-        this.options.notifier.publish('task_failed', [
+        this.notifier.publish('task_failed', [
           this.taskResource(task.id),
           ...changedResources,
         ]);
@@ -450,7 +450,7 @@ export class TaskEngine {
     recoveryStatus: TaskFailureResult['recoveryStatus'] = null,
   ) {
     try {
-      this.options.store.events.appendEvent({
+      this.events.appendEvent({
         type: `${task.type}_${succeeded ? 'succeeded' : 'failed'}`,
         severity: succeeded ? 'info' : 'error',
         retention: handler.critical ? 'critical' : 'ordinary',

@@ -1,3 +1,5 @@
+import { inject, injectable } from 'tsyringe';
+import { TOKENS } from '../../../composition/tokens.js';
 import type { HealthRepository } from '../../../storage/health-repository.js';
 import type { SettingsRepository } from '../../../storage/settings-repository.js';
 import { asStoredJson, type TaskHandler } from '../contracts.js';
@@ -8,6 +10,7 @@ import {
 } from './configuration-task-support.js';
 
 /** 解除入口锁定，并同步关闭与旧锁定绑定的自动切换设置。 */
+@injectable()
 export class ResetTaskHandler implements TaskHandler {
   /** 注册表使用的稳定任务类型。 */
   readonly type = 'reset' as const;
@@ -22,17 +25,19 @@ export class ResetTaskHandler implements TaskHandler {
   }
 
   /**
-   * @param store 快照和设置存储。
+   * @param health 快照存储。
+   * @param settings 设置存储。
    * @param adapter 重置和状态读取能力。
    */
   constructor(
-    private readonly store: {
-      health: Pick<
-        HealthRepository,
-        'getHealthSnapshot' | 'upsertHealthSnapshot'
-      >;
-      settings: Pick<SettingsRepository, 'updateSettings'>;
-    },
+    @inject(TOKENS.healthRepository)
+    private readonly health: Pick<
+      HealthRepository,
+      'getHealthSnapshot' | 'upsertHealthSnapshot'
+    >,
+    @inject(TOKENS.settingsRepository)
+    private readonly settings: Pick<SettingsRepository, 'updateSettings'>,
+    @inject(TOKENS.legacyAdapter)
     private readonly adapter: Pick<
       ConfigurationOperations,
       'resetLock' | 'getStatus'
@@ -50,11 +55,11 @@ export class ResetTaskHandler implements TaskHandler {
     try {
       const result = await this.adapter.resetLock();
       await refreshHealthSnapshotAfterConfiguration(
-        this.store.health,
+        this.health,
         this.adapter,
         true,
       );
-      this.store.settings.updateSettings({
+      this.settings.updateSettings({
         autoSwitchEnabled: false,
         autoSwitchProfileUid: null,
       });

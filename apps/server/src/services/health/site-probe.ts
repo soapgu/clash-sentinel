@@ -1,5 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import { Agent, ProxyAgent, fetch, type Dispatcher } from 'undici';
+import { injectable } from 'tsyringe';
 import type {
   SiteErrorType,
   SiteResult,
@@ -60,6 +61,7 @@ export function classifyProbeError(
 }
 
 /** 使用显式直连 Agent 或本机 Clash ProxyAgent 执行 HTTP 探测。 */
+@injectable()
 export class UndiciSiteProbe implements SiteProbe {
   private readonly directAgent = new Agent();
   private proxyAgent: { proxyUrl: string; agent: ProxyAgent } | null = null;

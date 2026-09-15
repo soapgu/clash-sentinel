@@ -109,13 +109,17 @@ async function setup(
     })),
     diagnose: vi.fn(async () => diagnosis()),
   };
-  const service = new HealthCheckService({
-    store,
+  const service = new HealthCheckService(
+    store.settings,
+    store.health,
+    store.sites,
+    store.diagnoses,
+    store.events,
     siteProbe,
-    proxyConfig: { getProxyUrl: vi.fn(async () => proxyUrl) },
+    { getProxyUrl: vi.fn(async () => proxyUrl) },
     legacy,
-    now: () => new Date('2026-09-09T04:00:01.000Z'),
-  });
+    () => new Date('2026-09-09T04:00:01.000Z'),
+  );
   return { store, siteProbe, legacy, service };
 }
 

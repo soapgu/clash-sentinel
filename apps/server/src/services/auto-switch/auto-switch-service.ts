@@ -5,11 +5,13 @@ import type {
   StreamResource,
   TaskRecoveryStatus,
 } from '@clash-sentinel/shared';
+import { inject, injectable } from 'tsyringe';
 import {
   LegacyAdapterError,
   type LegacyAdapter,
 } from '../../legacy/adapter.js';
 import { noopLogger, type AppLogger } from '../../logging.js';
+import { TOKENS } from '../../composition/tokens.js';
 import type { DiagnosisRepository } from '../../storage/diagnosis-repository.js';
 import type { HealthRepository } from '../../storage/health-repository.js';
 import type { SettingsRepository } from '../../storage/settings-repository.js';
@@ -21,25 +23,6 @@ import {
 
 /** 自动切换服务允许调用的最小 Legacy 诊断和应用能力。 */
 type AutoSwitchLegacyOperations = Pick<LegacyAdapter, 'diagnose' | 'applyIp'>;
-
-/** 自动切换领域服务的构造依赖。 */
-export interface AutoSwitchServiceOptions {
-  /** 读取设置、健康快照和诊断并写入切换结果的存储门面。 */
-  store: {
-    settings: Pick<SettingsRepository, 'getSettings' | 'updateSettings'>;
-    health: Pick<
-      HealthRepository,
-      'getHealthSnapshot' | 'upsertHealthSnapshot'
-    >;
-    diagnoses: Pick<DiagnosisRepository, 'getDiagnosis' | 'replaceDiagnosis'>;
-  };
-  /** 执行严格诊断和应用候选 IP 的 Legacy 能力。 */
-  adapter: AutoSwitchLegacyOperations;
-  /** 测试可注入的当前时间提供器。 */
-  now?: () => Date;
-  /** 记录自动处理结果和拒绝原因的统一日志器。 */
-  logger?: AppLogger;
-}
 
 /** 自动切换 Handler 内部使用的单次业务执行状态。 */
 export interface AutoSwitchPlan {
@@ -92,16 +75,44 @@ export interface AutoSwitchFailureHandling {
 }
 
 /** 在健康轮次持有的全局租约内执行自动诊断、切换、冷却和故障保护。 */
+@injectable()
 export class AutoSwitchService {
   /** 统一生成冷却截止时间的可注入时钟。 */
   private readonly now: () => Date;
   /** 自动处理领域日志器。 */
   private readonly logger: AppLogger;
 
-  /** @param options 自动切换所需存储、Legacy、时钟和日志依赖。 */
-  constructor(private readonly options: AutoSwitchServiceOptions) {
-    this.now = options.now ?? (() => new Date());
-    this.logger = options.logger ?? noopLogger;
+  /**
+   * @param settings 读取和更新自动切换设置的设置仓储。
+   * @param health 读取和写入健康快照的健康仓储。
+   * @param diagnoses 读取和替换诊断摘要的诊断仓储。
+   * @param adapter 执行严格诊断和应用候选 IP 的 Legacy 能力。
+   * @param now 测试可注入的当前时间提供器。
+   * @param logger 记录自动处理结果和拒绝原因的统一日志器。
+   */
+  constructor(
+    @inject(TOKENS.settingsRepository)
+    private readonly settings: Pick<
+      SettingsRepository,
+      'getSettings' | 'updateSettings'
+    >,
+    @inject(TOKENS.healthRepository)
+    private readonly health: Pick<
+      HealthRepository,
+      'getHealthSnapshot' | 'upsertHealthSnapshot'
+    >,
+    @inject(TOKENS.diagnosisRepository)
+    private readonly diagnoses: Pick<
+      DiagnosisRepository,
+      'getDiagnosis' | 'replaceDiagnosis'
+    >,
+    @inject(TOKENS.legacyAdapter)
+    private readonly adapter: AutoSwitchLegacyOperations,
+    @inject(TOKENS.dateClock) now: () => Date = () => new Date(),
+    @inject(TOKENS.appLogger) logger: AppLogger = noopLogger,
+  ) {
+    this.now = now;
+    this.logger = logger;
   }
 
   /**
@@ -117,7 +128,7 @@ export class AutoSwitchService {
     const currentIp = input?.currentIp;
     const profileUid = input?.profileUid;
     const reuseDiagnosis = input?.reuseDiagnosis;
-    const snapshot = this.options.store.health.getHealthSnapshot();
+    const snapshot = this.health.getHealthSnapshot();
     if (
       (source !== 'manual' && source !== 'scheduled') ||
       typeof parentId !== 'string' ||
@@ -148,16 +159,14 @@ export class AutoSwitchService {
    * @throws 条件失效、诊断失败或配置应用失败时交由 Handler 处理。
    */
   async execute(plan: AutoSwitchPlan): Promise<AutoSwitchExecution> {
-    const settings = this.options.store.settings.getSettings();
+    const settings = this.settings.getSettings();
     const snapshot = plan.snapshot;
     if (!canAutoSwitch(settings, snapshot, this.now().getTime()))
       throw new Error('自动切换执行条件已失效');
     const lock = snapshot.lock;
     const diagnosis = plan.reuseDiagnosis
-      ? this.options.store.diagnoses.getDiagnosis()
-      : this.options.store.diagnoses.replaceDiagnosis(
-          await this.options.adapter.diagnose(),
-        );
+      ? this.diagnoses.getDiagnosis()
+      : this.diagnoses.replaceDiagnosis(await this.adapter.diagnose());
     const changedResources: StreamResource[] = ['monitoring', 'status'];
     if (!plan.reuseDiagnosis) changedResources.push('candidates');
     const candidate = selectAutoSwitchCandidate(
@@ -181,7 +190,7 @@ export class AutoSwitchService {
     }
     this.writeRecommended(snapshot, candidate.ip);
     plan.phase = 'apply';
-    const result = await this.options.adapter.applyIp(candidate.ip);
+    const result = await this.adapter.applyIp(candidate.ip);
     this.writeSuccess(snapshot, candidate.ip, settings.autoSwitchCooldownMs);
     return {
       result: result as StoredJsonObject,
@@ -209,7 +218,7 @@ export class AutoSwitchService {
   ): AutoSwitchFailureHandling {
     const handling = this.applyFailurePolicy(
       plan.snapshot,
-      this.options.store.settings.getSettings().autoSwitchCooldownMs,
+      this.settings.getSettings().autoSwitchCooldownMs,
       plan.phase,
       error,
       recoveryStatus,
@@ -228,7 +237,7 @@ export class AutoSwitchService {
    * @returns recoveryStatus=unknown 并包含 settings 的资源变化。
    */
   handleInvalidContext(): AutoSwitchFailureHandling {
-    this.options.store.settings.updateSettings({
+    this.settings.updateSettings({
       autoSwitchEnabled: false,
       autoSwitchProfileUid: null,
     });
@@ -257,7 +266,7 @@ export class AutoSwitchService {
       effectiveRecovery === 'recovery_failed' ||
       effectiveRecovery === 'unknown'
     ) {
-      this.options.store.settings.updateSettings({
+      this.settings.updateSettings({
         autoSwitchEnabled: false,
         autoSwitchProfileUid: null,
       });
@@ -275,7 +284,7 @@ export class AutoSwitchService {
 
   /** 将诊断推荐地址写入当前健康快照。 */
   private writeRecommended(snapshot: HealthSnapshot, recommendedIp: string) {
-    this.options.store.health.upsertHealthSnapshot({
+    this.health.upsertHealthSnapshot({
       ...snapshot,
       recommendedIp,
       updatedAt: this.now().toISOString(),
@@ -289,7 +298,7 @@ export class AutoSwitchService {
     recommendedIp: string | null,
   ) {
     const completedAt = this.now();
-    this.options.store.health.upsertHealthSnapshot({
+    this.health.upsertHealthSnapshot({
       ...snapshot,
       recommendedIp,
       autoSwitchCooldownUntil: new Date(
@@ -306,7 +315,7 @@ export class AutoSwitchService {
     cooldownMs: number,
   ) {
     const completedAt = this.now();
-    this.options.store.health.upsertHealthSnapshot({
+    this.health.upsertHealthSnapshot({
       ...snapshot,
       status: 'healthy',
       lock: {

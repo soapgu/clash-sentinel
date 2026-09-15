@@ -6,7 +6,13 @@ import { HealthScheduler } from './services/health/health-scheduler.js';
 import { UndiciSiteProbe } from './services/health/site-probe.js';
 import { StatusNotificationCenter } from './services/status-notifier.js';
 import { TaskEngine } from './services/tasks/task-engine.js';
-import { createTaskHandlerRegistry } from './services/tasks/registry.js';
+import { AutoSwitchTaskHandler } from './services/tasks/handlers/auto-switch-task-handler.js';
+import { ApplyTaskHandler } from './services/tasks/handlers/apply-task-handler.js';
+import { DiagnoseTaskHandler } from './services/tasks/handlers/diagnose-task-handler.js';
+import { HealthCheckTaskHandler } from './services/tasks/handlers/health-check-task-handler.js';
+import { ResetTaskHandler } from './services/tasks/handlers/reset-task-handler.js';
+import { RollbackTaskHandler } from './services/tasks/handlers/rollback-task-handler.js';
+import type { TaskHandlerRegistry } from './services/tasks/contracts.js';
 import { SqliteStore } from './storage/store.js';
 import { createAppLogger, type AppLogger } from './logging.js';
 import { loadServerConfig, type ServerConfig } from './config.js';
@@ -27,6 +33,23 @@ export interface RuntimeDependencies {
   siteProbe: UndiciSiteProbe;
   /** 服务端全部模块共享的自然文本日志器。 */
   logger: AppLogger;
+}
+
+/** 由六个领域 Handler 组成且覆盖全部任务类型的不可变注册表。 */
+function createHandlers(
+  store: SqliteStore,
+  adapter: LegacyAdapter,
+  healthCheck: HealthCheckService,
+  autoSwitch: AutoSwitchService,
+): TaskHandlerRegistry {
+  return {
+    health_check: new HealthCheckTaskHandler(healthCheck),
+    diagnose: new DiagnoseTaskHandler(store.diagnoses, adapter),
+    apply: new ApplyTaskHandler(store.health, adapter),
+    reset: new ResetTaskHandler(store.health, store.settings, adapter),
+    rollback: new RollbackTaskHandler(store.health, adapter),
+    auto_switch: new AutoSwitchTaskHandler(autoSwitch),
+  } satisfies TaskHandlerRegistry;
 }
 
 /**
@@ -60,11 +83,14 @@ export function createRuntimeDependencies(
     environment,
     logger,
   });
-  const autoSwitch = new AutoSwitchService({
-    store,
+  const autoSwitch = new AutoSwitchService(
+    store.settings,
+    store.health,
+    store.diagnoses,
     adapter,
+    undefined,
     logger,
-  });
+  );
   let recoveredTasks: number;
   try {
     recoveredTasks = recoverRuntimeState({ store, autoSwitch });
@@ -75,34 +101,36 @@ export function createRuntimeDependencies(
   logger.info('storage:sqlite', 'runtime state recovered', { recoveredTasks });
   const notifier = new StatusNotificationCenter(() => new Date(), logger);
   const siteProbe = new UndiciSiteProbe();
-  const healthCheck = new HealthCheckService({
-    store,
+  const healthCheck = new HealthCheckService(
+    store.settings,
+    store.health,
+    store.sites,
+    store.diagnoses,
+    store.events,
     siteProbe,
-    proxyConfig: new ClashProxyConfig(paths.runtimeConfigPath),
-    legacy: adapter,
-    logger,
-  });
-  const handlers = createTaskHandlerRegistry({
-    store,
+    new ClashProxyConfig(paths.runtimeConfigPath),
     adapter,
-    healthCheck,
-    autoSwitch,
-  });
-  const taskEngine = new TaskEngine({
-    store,
-    notifier,
+    undefined,
     logger,
-    handlers,
-  });
+  );
+  const taskEngine = new TaskEngine(
+    store.tasks,
+    store.events,
+    notifier,
+    createHandlers(store, adapter, healthCheck, autoSwitch),
+    logger,
+  );
   return {
     store,
     taskEngine,
-    scheduler: new HealthScheduler({
-      store,
+    scheduler: new HealthScheduler(
+      store.settings,
+      store.events,
       notifier,
-      logger,
       taskEngine,
-    }),
+      undefined,
+      logger,
+    ),
     notifier,
     siteProbe,
     logger,

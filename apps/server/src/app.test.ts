@@ -15,10 +15,13 @@ import type {
 import { createApp } from './app.js';
 import { LegacyAdapterError } from './legacy/adapter.js';
 import { TaskEngine } from './services/tasks/task-engine.js';
-import {
-  createTaskHandlerRegistry,
-  type LegacyOperations,
-} from './services/tasks/registry.js';
+import type { LegacyOperations } from './services/tasks/contracts.js';
+import { ApplyTaskHandler } from './services/tasks/handlers/apply-task-handler.js';
+import { AutoSwitchTaskHandler } from './services/tasks/handlers/auto-switch-task-handler.js';
+import { DiagnoseTaskHandler } from './services/tasks/handlers/diagnose-task-handler.js';
+import { HealthCheckTaskHandler } from './services/tasks/handlers/health-check-task-handler.js';
+import { ResetTaskHandler } from './services/tasks/handlers/reset-task-handler.js';
+import { RollbackTaskHandler } from './services/tasks/handlers/rollback-task-handler.js';
 import { AutoSwitchService } from './services/auto-switch/auto-switch-service.js';
 import { StatusNotificationCenter } from './services/status-notifier.js';
 import { SqliteStore } from './storage/store.js';
@@ -187,18 +190,28 @@ async function createSetup(
       };
     }),
   };
-  const autoSwitch = new AutoSwitchService({ store, adapter, logger });
-  const taskEngine = new TaskEngine({
-    store,
-    notifier,
+  const autoSwitch = new AutoSwitchService(
+    store.settings,
+    store.health,
+    store.diagnoses,
+    adapter,
+    undefined,
     logger,
-    handlers: createTaskHandlerRegistry({
-      store,
-      adapter,
-      healthCheck,
-      autoSwitch,
-    }),
-  });
+  );
+  const taskEngine = new TaskEngine(
+    store.tasks,
+    store.events,
+    notifier,
+    {
+      health_check: new HealthCheckTaskHandler(healthCheck),
+      diagnose: new DiagnoseTaskHandler(store.diagnoses, adapter),
+      apply: new ApplyTaskHandler(store.health, adapter),
+      reset: new ResetTaskHandler(store.health, store.settings, adapter),
+      rollback: new RollbackTaskHandler(store.health, adapter),
+      auto_switch: new AutoSwitchTaskHandler(autoSwitch),
+    },
+    logger,
+  );
   const scheduler = {
     getSnapshot: vi.fn<() => MonitoringSnapshot>(() => ({
       enabled: true as const,

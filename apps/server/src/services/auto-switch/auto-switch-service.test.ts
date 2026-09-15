@@ -12,7 +12,12 @@ import { SqliteStore } from '../../storage/store.js';
 import { StatusNotificationCenter } from '../status-notifier.js';
 import { AutoSwitchService } from './auto-switch-service.js';
 import { TaskEngine } from '../tasks/task-engine.js';
-import { createTaskHandlerRegistry } from '../tasks/registry.js';
+import { ApplyTaskHandler } from '../tasks/handlers/apply-task-handler.js';
+import { AutoSwitchTaskHandler } from '../tasks/handlers/auto-switch-task-handler.js';
+import { DiagnoseTaskHandler } from '../tasks/handlers/diagnose-task-handler.js';
+import { HealthCheckTaskHandler } from '../tasks/handlers/health-check-task-handler.js';
+import { ResetTaskHandler } from '../tasks/handlers/reset-task-handler.js';
+import { RollbackTaskHandler } from '../tasks/handlers/rollback-task-handler.js';
 import type { HealthCheckExecution } from '../health/health-check.js';
 
 const cleanups: Array<{ root: string; store: SqliteStore }> = [];
@@ -98,29 +103,30 @@ async function setup(
       };
     }),
   };
-  const service = new AutoSwitchService({
-    store,
+  const service = new AutoSwitchService(
+    store.settings,
+    store.health,
+    store.diagnoses,
     adapter,
-    now: () => new Date('2026-09-11T04:01:00.000Z'),
-  });
+    () => new Date('2026-09-11T04:01:00.000Z'),
+  );
   const healthCheck = { run: vi.fn<() => Promise<HealthCheckExecution>>() };
-  const taskEngine = new TaskEngine({
-    store,
-    notifier,
-    handlers: createTaskHandlerRegistry({
-      store,
-      adapter: {
-        ...adapter,
-        diagnose: adapter.diagnose,
-        getStatus: vi.fn(),
-        readLatestDiagnosis: vi.fn(),
-        healthCheck: vi.fn(),
-        resetLock: vi.fn(),
-        rollback: vi.fn(),
-      },
-      healthCheck,
-      autoSwitch: service,
-    }),
+  const fullAdapter = {
+    ...adapter,
+    diagnose: adapter.diagnose,
+    getStatus: vi.fn(),
+    readLatestDiagnosis: vi.fn(),
+    healthCheck: vi.fn(),
+    resetLock: vi.fn(),
+    rollback: vi.fn(),
+  };
+  const taskEngine = new TaskEngine(store.tasks, store.events, notifier, {
+    health_check: new HealthCheckTaskHandler(healthCheck),
+    diagnose: new DiagnoseTaskHandler(store.diagnoses, fullAdapter),
+    apply: new ApplyTaskHandler(store.health, fullAdapter),
+    reset: new ResetTaskHandler(store.health, store.settings, fullAdapter),
+    rollback: new RollbackTaskHandler(store.health, fullAdapter),
+    auto_switch: new AutoSwitchTaskHandler(service),
   });
   const notifications: StreamNotification[] = [];
   notifier.subscribe((item) => notifications.push(item));

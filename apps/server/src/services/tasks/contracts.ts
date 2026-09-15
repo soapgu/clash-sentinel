@@ -4,7 +4,20 @@ import type {
   TaskRecoveryStatus,
   TaskType,
 } from '@clash-sentinel/shared';
+import type { LegacyAdapter } from '../../legacy/adapter.js';
 import type { AppLogger } from '../../logging.js';
+
+/** 任务 Handler 装配时共用的最小 Legacy 能力集合。 */
+export type LegacyOperations = Pick<
+  LegacyAdapter,
+  | 'getStatus'
+  | 'readLatestDiagnosis'
+  | 'diagnose'
+  | 'healthCheck'
+  | 'applyIp'
+  | 'resetLock'
+  | 'rollback'
+>;
 
 /** 描述一个即将由 TaskEngine 持久化并执行的任务，不包含可执行回调。 */
 export interface TaskSubmission {

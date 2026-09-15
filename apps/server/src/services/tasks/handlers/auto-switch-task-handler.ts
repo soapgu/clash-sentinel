@@ -1,8 +1,11 @@
+import { inject, injectable } from 'tsyringe';
+import { TOKENS } from '../../../composition/tokens.js';
 import type { AutoSwitchService } from '../../auto-switch/auto-switch-service.js';
 import { TaskExecutionError, type TaskHandler } from '../contracts.js';
 import { legacyFailure } from '../legacy-task-failure.js';
 
 /** 从持久化上下文恢复并执行自动切换领域流程。 */
+@injectable()
 export class AutoSwitchTaskHandler implements TaskHandler {
   /** 注册表使用的内部任务类型。 */
   readonly type = 'auto_switch' as const;
@@ -25,6 +28,7 @@ export class AutoSwitchTaskHandler implements TaskHandler {
 
   /** @param service 自动切换的规划恢复、执行和失败保护能力。 */
   constructor(
+    @inject(TOKENS.autoSwitchService)
     private readonly service: Pick<
       AutoSwitchService,
       'restorePlan' | 'execute' | 'handleFailure' | 'handleInvalidContext'

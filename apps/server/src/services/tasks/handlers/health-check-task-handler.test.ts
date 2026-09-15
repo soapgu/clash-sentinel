@@ -44,7 +44,7 @@ for (const persistence of ['persistent', 'transient'] as const) {
       reuseDiagnosis: true,
     };
     const healthCheck = { run: vi.fn(async () => value) };
-    const handler = new HealthCheckTaskHandler({ healthCheck });
+    const handler = new HealthCheckTaskHandler(healthCheck);
     const task: TaskExecutionIdentity = {
       id: '550e8400-e29b-41d4-a716-446655440000',
       type: 'health_check',
@@ -81,7 +81,7 @@ for (const persistence of ['persistent', 'transient'] as const) {
 
 test('健康服务未建议自动切换时不生成下一任务', async () => {
   const handler = new HealthCheckTaskHandler({
-    healthCheck: { run: vi.fn(async () => execution()) },
+    run: vi.fn(async () => execution()),
   });
   const result = await handler.execute({
     task: {

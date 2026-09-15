@@ -77,7 +77,13 @@ async function setup(
   const notifications: StreamNotification[] = [];
   notifier.subscribe((notification) => notifications.push(notification));
   notifications.length = 0;
-  const engine = new TaskEngine({ store, notifier, handlers, logger });
+  const engine = new TaskEngine(
+    store.tasks,
+    store.events,
+    notifier,
+    handlers,
+    logger,
+  );
   return { store, notifier, notifications, engine };
 }
 
@@ -340,14 +346,15 @@ test('瞬时根任务的后续任务继续持久化并合并资源', async () =>
 test('注册表错误在启动时失败，TaskEngine 不包含具体业务分派', async () => {
   expect(
     () =>
-      new TaskEngine({
-        store: {} as SqliteStore,
-        notifier: new StatusNotificationCenter(),
-        handlers: {
+      new TaskEngine(
+        {} as Pick<SqliteStore, 'tasks'>,
+        {} as Pick<SqliteStore, 'events'>,
+        new StatusNotificationCenter(),
+        {
           ...registry(),
           diagnose: handler('apply'),
         } as TaskHandlerRegistry,
-      }),
+      ),
   ).toThrow('任务处理器注册错误');
 
   const source = await readFile(

@@ -1,4 +1,6 @@
 import type { StreamResource } from '@clash-sentinel/shared';
+import { inject, injectable } from 'tsyringe';
+import { TOKENS } from '../../../composition/tokens.js';
 import type {
   HealthCheckChanges,
   HealthCheckService,
@@ -9,13 +11,8 @@ import {
   type TaskSubmission,
 } from '../contracts.js';
 
-/** 创建健康检查任务 Handler 所需的领域端口。 */
-export interface HealthCheckTaskHandlerOptions {
-  /** 执行并持久化完整健康检测的编排器。 */
-  healthCheck: Pick<HealthCheckService, 'run'>;
-}
-
 /** 执行健康检查，并声明可能需要在同一租约中运行的自动任务。 */
+@injectable()
 export class HealthCheckTaskHandler implements TaskHandler {
   /** 注册表使用的稳定任务类型。 */
   readonly type = 'health_check' as const;
@@ -30,9 +27,12 @@ export class HealthCheckTaskHandler implements TaskHandler {
   }
 
   /**
-   * @param options 健康检测编排器。
+   * @param healthCheck 执行并持久化完整健康检测的编排器。
    */
-  constructor(private readonly options: HealthCheckTaskHandlerOptions) {}
+  constructor(
+    @inject(TOKENS.healthCheckService)
+    private readonly healthCheck: Pick<HealthCheckService, 'run'>,
+  ) {}
 
   /**
    * 执行检测并保持公开任务结果为扁平 HealthSnapshot。
@@ -42,7 +42,7 @@ export class HealthCheckTaskHandler implements TaskHandler {
    */
   async execute({ task }: Parameters<TaskHandler['execute']>[0]) {
     const source = task.persistence === 'transient' ? 'scheduled' : 'manual';
-    const execution = await this.options.healthCheck.run(source, task.id);
+    const execution = await this.healthCheck.run(source, task.id);
     const request = execution.autoSwitchRequest;
     const nextTask: TaskSubmission | null = request
       ? {
