@@ -12,10 +12,10 @@ describe('服务端项目路径', () => {
   test('src 与 dist 模块位置回溯到相同仓库根目录', () => {
     const root = '/opt/clash-sentinel';
     expect(
-      projectRootFromModuleUrl(`file://${root}/apps/server/src/runtime.ts`),
+      projectRootFromModuleUrl(`file://${root}/apps/server/src/index.ts`),
     ).toBe(root);
     expect(
-      projectRootFromModuleUrl(`file://${root}/apps/server/dist/runtime.js`),
+      projectRootFromModuleUrl(`file://${root}/apps/server/dist/index.js`),
     ).toBe(root);
   });
 

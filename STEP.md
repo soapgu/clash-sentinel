@@ -647,7 +647,7 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
 
 **前置依赖**：Step 15。
 
-**状态**：进行中（16.1、16.2 已完成，16.3、16.4 未开始）。
+**状态**：进行中（16.1 至 16.3 已完成，16.4 未开始）。
 
 使用 TSyringe 建立服务端 IoC 容器，以 `ApplicationRuntime` 作为唯一应用根对象，取代当前集中手工构造依赖的 `runtime.ts`。本步骤只重构依赖装配和生命周期，不改变数据库、HTTP API、SSE、任务执行及自动切换行为。
 
@@ -702,6 +702,8 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
 - 保留启动恢复失败时立即关闭已创建资源的行为，保证半初始化容器不会遗留 SQLite 或 Undici 句柄。
 - 容器 `dispose()` 只释放由容器持有且实现 `Disposable` 的最终资源；业务停机顺序仍由 `ApplicationRuntime.stop()` 显式控制。
 - 删除被取代的 `RuntimeDependencies`、`createRuntimeDependencies()` 和 `runtime.ts`，避免同时维护手工组合根与 IoC 组合根。
+
+本地验证（2026-09-16）：新增 `src/application-runtime.ts`，`@injectable()` 应用根构造注入 Store、自动切换服务、任务引擎、调度器、通知中心、探测器、日志器、环境变量和监听参数九项依赖（token 总数 23，新增 `httpListen` 承载原硬编码的端口与主机，测试可覆盖为临时端口）。`start()` 按序执行启动恢复、创建 Koa 应用、Promise 化监听（`listening`/`error` 事件决定 resolve/reject，监听失败可被 await 捕获）和非 test 环境启动调度器；`stop()` 幂等并逐字保留原关闭顺序（停接收任务 → 停调度器 → 关 SSE → 并行等待 HTTP/调度/任务空闲 → 释放探测器 → 关数据库），启停日志文案与 scope 不变。`index.ts` 重写为纯进程职责：Node 24 检查、容器前 bootstrap logger 与解析后切换、全局异常钩子、信号处理与二次强退（130/143）、`child.dispose()` 收尾；`resolve(ApplicationRuntime)` 是唯一一次解析，启动恢复或监听失败经 `shutdown()` → `stop()` 释放全部已构造资源。`runtime.ts` 及 `RuntimeDependencies`、`createRuntimeDependencies`、过渡期 `createHandlers` 删除；`project-paths.test.ts` 的样例路径更新为仍存在的模块。新增 `application-runtime.test.ts` 两个生命周期测试：完整启动-请求-关闭（临时端口监听、`/api/health` 200、数据库真实关闭、二次 stop 幂等）和启动恢复失败句柄释放（fake store 与探测器均被关闭）。174 个 Vitest/Supertest 测试、类型检查、ESLint、Prettier、生产构建和 dist 完整生命周期 node 冒烟（recovered → started → request → notifier/scheduler/database 关闭日志序列与重构前一致）全部通过。
 
 #### 子步骤 16.4：测试隔离与架构约束
 

@@ -8,6 +8,7 @@ import {
 import { resolveRuntimePaths, type RuntimePaths } from '../project-paths.js';
 import { createAppLogger, type AppLogger } from '../logging.js';
 import { loadServerConfig, type ServerConfig } from '../config.js';
+import { ApplicationRuntime } from '../application-runtime.js';
 import { TOKENS } from './tokens.js';
 import { SqliteStore } from '../storage/store.js';
 import { LegacyAdapter } from '../legacy/adapter.js';
@@ -116,6 +117,11 @@ function registerServices(
     { useClass: HealthScheduler },
     { lifecycle: Lifecycle.ContainerScoped },
   );
+  child.register(
+    ApplicationRuntime,
+    { useClass: ApplicationRuntime },
+    { lifecycle: Lifecycle.ContainerScoped },
+  );
   child.register(TOKENS.taskHandlerRegistry, {
     useFactory: instanceCachingFactory((c) => {
       const registry: TaskHandlerRegistry = {
@@ -187,5 +193,8 @@ export function createAppContainer(
   });
   child.register(TOKENS.clock, { useValue: Date.now });
   child.register(TOKENS.dateClock, { useValue: () => new Date() });
+  child.register(TOKENS.httpListen, {
+    useValue: { port: 3000, host: '127.0.0.1' },
+  });
   return registerServices(child, environment, config, logger);
 }

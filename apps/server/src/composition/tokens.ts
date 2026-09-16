@@ -70,6 +70,8 @@ export const TOKENS = {
   taskEngine: Symbol('TaskEngine'),
   /** 不可变任务 Handler 注册表。 */
   taskHandlerRegistry: Symbol('TaskHandlerRegistry'),
+  /** HTTP 监听端口与主机。 */
+  httpListen: Symbol('HttpListen'),
 } as const;
 
 /** token 的值类型映射，供容器注册和测试构造复用。 */
@@ -96,4 +98,5 @@ export interface TokenTypes {
   [TOKENS.autoSwitchService]: AutoSwitchService;
   [TOKENS.taskEngine]: TaskEngine;
   [TOKENS.taskHandlerRegistry]: TaskHandlerRegistry;
+  [TOKENS.httpListen]: { port: number; host: string };
 }
