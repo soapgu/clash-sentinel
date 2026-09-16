@@ -647,7 +647,7 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
 
 **前置依赖**：Step 15。
 
-**状态**：进行中（16.1 已完成，16.2 至 16.4 未开始）。
+**状态**：进行中（16.1、16.2 已完成，16.3、16.4 未开始）。
 
 使用 TSyringe 建立服务端 IoC 容器，以 `ApplicationRuntime` 作为唯一应用根对象，取代当前集中手工构造依赖的 `runtime.ts`。本步骤只重构依赖装配和生命周期，不改变数据库、HTTP API、SSE、任务执行及自动切换行为。
 
@@ -683,6 +683,14 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
 - 任务 Handler 继续组成完整、不可变的 `TaskHandlerRegistry`；注册表由容器工厂生成并注入 `TaskEngine`，不在 `TaskEngine` 内动态访问容器。
 - `createApp()` 和 `createApiRouter()` 继续接收明确依赖，不在 Koa 中间件、Router、服务、仓储或 Handler 中调用 `container.resolve()`。
 - 工作量预期：经容器装配的服务构造参数改造后，相关集成测试 setup 需同步调整，是本步骤的主要工作量。
+
+本地验证（2026-09-15，提交 `a6a1316`）：`TaskEngine`、`HealthScheduler`、`HealthCheckService`、`AutoSwitchService` 和六个任务 Handler 全部改为逐项构造函数注入，参数显式 `@inject(TOKENS.xxx)`，`Pick<>` 收窄保留在参数类型上；各服务 `XxxOptions` 接口删除。新增 `dateClock` token（`() => Date`）与既有 `clock`（`() => number`）区分两种时钟形状，token 总数 22。容器工厂注册完整依赖图：`SqliteStore`、`LegacyAdapter`、`ClashProxyConfig`、`StatusNotificationCenter` 和 Handler 注册表用 `instanceCachingFactory` provider，五个服务类用 `Lifecycle.ContainerScoped`，六个仓储 token 以缓存工厂别名指向同一 `SqliteStore` 实例字段。`createTaskHandlerRegistry` 及 `registry.ts` 删除，`LegacyOperations` 类型移入 `contracts.ts`，注册表由容器 resolve 六个 Handler 组装；`runtime.ts` 手工装配同步新签名作为 16.3 切换前的过渡（含私有 `createHandlers` 辅助函数）。六个既有测试文件仅改构造调用、业务断言零变化；新增 `graph.test.ts` 六个图解析测试（完整图可解析且注册表覆盖全部任务类型、`ContainerScoped` 同 child 同实例、覆盖 Store 后仓储与引擎依赖随之切换、跨 child 隔离、解析无定时器和子进程/网络副作用）。172 个 Vitest/Supertest 测试、类型检查、ESLint、Prettier、生产构建和 dist 完整图 node 冒烟全部通过。
+
+实施补充的 TSyringe 4.10 API 事实（16.2 实测，接续 16.1 清单）：
+
+- `register` 不接受裸工厂：`instanceCachingFactory(...)` 必须包在 `{ useFactory: ... }` provider 中注册；工厂缓存闭包的作用域等于所在 child（每次 `createAppContainer` 重新注册），效果与 `ContainerScoped` 等价。
+- `resolve(symbolToken)` 无法推断类型，调用处须显式泛型（如 `resolve<SqliteStore>(TOKENS.sqliteStore)`）；Symbol 不携带类型信息。
+- 位置参数注入下可选依赖改用默认值参数（如 `now: () => Date = () => new Date()`）；生产装配中跳过某可选参数需显式传 `undefined` 占位。
 
 #### 子步骤 16.3：建立唯一应用根和生命周期
 
