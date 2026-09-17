@@ -73,8 +73,10 @@ async function bootstrap() {
   }
   child = container;
   try {
+    const bootstrapLogger = logger;
     runtime = container.resolve(ApplicationRuntime);
     logger = runtime.logger;
+    if (bootstrapLogger !== logger) await bootstrapLogger.close();
     const server: Server = await runtime.start();
     server.on('error', (error: NodeJS.ErrnoException) => {
       logger.error('app:bootstrap', 'server start failed', {

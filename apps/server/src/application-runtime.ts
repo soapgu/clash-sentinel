@@ -16,7 +16,7 @@ import type { AppLogger } from './logging.js';
 @injectable()
 export class ApplicationRuntime {
   private server: Server | null = null;
-  private stopping = false;
+  private stopPromise: Promise<void> | null = null;
 
   constructor(
     @inject(TOKENS.sqliteStore) private readonly store: SqliteStore,
@@ -81,12 +81,32 @@ export class ApplicationRuntime {
   }
 
   /** 幂等停止：保留既定关闭顺序，不遗留数据库、HTTP、SSE 或探测句柄。 */
-  async stop(): Promise<void> {
-    if (this.stopping) return;
-    this.stopping = true;
-    this.taskEngine.stopAccepting();
-    const schedulerStopped = this.scheduler.stop();
-    this.notifier.close();
+  stop(): Promise<void> {
+    this.stopPromise ??= this.stopResources();
+    return this.stopPromise;
+  }
+
+  /** 执行一次完整停机；单项失败不阻止后续资源释放。 */
+  private async stopResources(): Promise<void> {
+    const errors: unknown[] = [];
+    const capture = (operation: () => void): void => {
+      try {
+        operation();
+      } catch (error) {
+        errors.push(error);
+      }
+    };
+
+    capture(() => this.taskEngine.stopAccepting());
+
+    let schedulerStopped = Promise.resolve();
+    try {
+      schedulerStopped = this.scheduler.stop();
+    } catch (error) {
+      errors.push(error);
+    }
+    capture(() => this.notifier.close());
+
     const currentServer = this.server;
     const serverClosed = new Promise<void>((resolvePromise) => {
       if (!currentServer?.listening) {
@@ -96,12 +116,29 @@ export class ApplicationRuntime {
       currentServer.close(() => resolvePromise());
       currentServer.closeIdleConnections();
     });
-    await Promise.all([
+    let taskIdle = Promise.resolve();
+    try {
+      taskIdle = this.taskEngine.waitForIdle();
+    } catch (error) {
+      errors.push(error);
+    }
+    const concurrentResults = await Promise.allSettled([
       serverClosed,
       schedulerStopped,
-      this.taskEngine.waitForIdle(),
+      taskIdle,
     ]);
-    await this.siteProbe.close();
-    this.store.close();
+    for (const result of concurrentResults) {
+      if (result.status === 'rejected') errors.push(result.reason);
+    }
+
+    try {
+      await this.siteProbe.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    capture(() => this.store.close());
+
+    if (errors.length > 0)
+      throw new AggregateError(errors, 'application shutdown failed');
   }
 }

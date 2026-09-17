@@ -16,13 +16,33 @@ export const TEST_CONFIG: ServerConfig = {
 };
 
 /** 当前测试创建且需要关闭并删除的隔离容器。 */
-const cleanups: Array<{ root: string; store: SqliteStore }> = [];
+const cleanups: Array<{
+  child: DependencyContainer;
+  root: string;
+  store: SqliteStore;
+}> = [];
 
 afterEach(async () => {
+  const errors: unknown[] = [];
   for (const item of cleanups.splice(0)) {
-    item.store.close();
-    await rm(item.root, { recursive: true, force: true });
+    try {
+      await item.child.dispose();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      item.store.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await rm(item.root, { recursive: true, force: true });
+    } catch (error) {
+      errors.push(error);
+    }
   }
+  if (errors.length > 0)
+    throw new AggregateError(errors, 'test container cleanup failed');
 });
 
 /**
@@ -72,6 +92,6 @@ export async function createIsolatedContainer(
     logger: options.logger ?? noopLogger,
   });
   const store = child.resolve<SqliteStore>(TOKENS.sqliteStore);
-  cleanups.push({ root, store });
+  cleanups.push({ child, root, store });
   return { child, store, root, environment };
 }

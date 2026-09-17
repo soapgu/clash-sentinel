@@ -5,6 +5,7 @@ import { createIsolatedContainer } from '../test-support/container.js';
 import { ApplicationRuntime } from './application-runtime.js';
 import { TOKENS } from './composition/tokens.js';
 import type { SqliteStore } from './storage/store.js';
+import type { HealthScheduler } from './services/health/health-scheduler.js';
 import type { UndiciSiteProbe } from './services/health/site-probe.js';
 
 test('完整生命周期：启动恢复、监听、请求、关闭且二次停止幂等', async () => {
@@ -68,6 +69,38 @@ test('启动恢复失败时释放已构造的数据库和探测器句柄', async
   expect(storeClosed).toHaveBeenCalledTimes(1);
   expect(probeClosed).toHaveBeenCalledTimes(1);
   expect(environment).toBeDefined();
+});
+
+test('停机步骤失败时继续释放后续资源且重复调用复用失败结果', async () => {
+  const { child, store } = await createIsolatedContainer({
+    prefix: 'clash-runtime-stop-fail-',
+    nodeEnv: 'test',
+  });
+  const scheduler = child.resolve<HealthScheduler>(TOKENS.healthScheduler);
+  const siteProbe = child.resolve<UndiciSiteProbe>(TOKENS.siteProbe);
+  const schedulerError = new Error('调度器停止失败');
+  const probeError = new Error('探测器关闭失败');
+  const schedulerStop = vi
+    .spyOn(scheduler, 'stop')
+    .mockRejectedValue(schedulerError);
+  const probeClose = vi.spyOn(siteProbe, 'close').mockRejectedValue(probeError);
+  const storeClose = vi.spyOn(store, 'close');
+
+  const runtime = child.resolve(ApplicationRuntime);
+  const firstStop = runtime.stop();
+  const secondStop = runtime.stop();
+  expect(secondStop).toBe(firstStop);
+  await expect(firstStop).rejects.toMatchObject({
+    errors: [schedulerError, probeError],
+  });
+  expect(schedulerStop).toHaveBeenCalledTimes(1);
+  expect(probeClose).toHaveBeenCalledTimes(1);
+  expect(storeClose).toHaveBeenCalledTimes(1);
+
+  await expect(runtime.stop()).rejects.toBeInstanceOf(AggregateError);
+  expect(schedulerStop).toHaveBeenCalledTimes(1);
+  expect(probeClose).toHaveBeenCalledTimes(1);
+  expect(storeClose).toHaveBeenCalledTimes(1);
 });
 
 test('端口被占用时监听失败并释放已构造句柄', async () => {
