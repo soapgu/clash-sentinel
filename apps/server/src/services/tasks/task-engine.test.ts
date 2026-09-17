@@ -11,6 +11,8 @@ import type {
 } from '@clash-sentinel/shared';
 import { noopLogger, type AppLogger } from '../../logging.js';
 import { SqliteStore } from '../../storage/store.js';
+import type { EventRepository } from '../../storage/event-repository.js';
+import type { TaskRepository } from '../../storage/task-repository.js';
 import { StatusNotificationCenter } from '../status-notifier.js';
 import type {
   TaskExecutionResult,
@@ -347,8 +349,11 @@ test('注册表错误在启动时失败，TaskEngine 不包含具体业务分派
   expect(
     () =>
       new TaskEngine(
-        {} as Pick<SqliteStore, 'tasks'>,
-        {} as Pick<SqliteStore, 'events'>,
+        {} as Pick<
+          TaskRepository,
+          'createTask' | 'startTask' | 'completeTask' | 'failTask'
+        >,
+        {} as Pick<EventRepository, 'appendEvent'>,
         new StatusNotificationCenter(),
         {
           ...registry(),

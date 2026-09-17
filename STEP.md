@@ -647,7 +647,7 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
 
 **前置依赖**：Step 15。
 
-**状态**：进行中（16.1 至 16.3 已完成，16.4 未开始）。
+**状态**：已完成（16.1 至 16.4 全部完成，2026-09-17）。
 
 使用 TSyringe 建立服务端 IoC 容器，以 `ApplicationRuntime` 作为唯一应用根对象，取代当前集中手工构造依赖的 `runtime.ts`。本步骤只重构依赖装配和生命周期，不改变数据库、HTTP API、SSE、任务执行及自动切换行为。
 
@@ -717,6 +717,8 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
 - 将 `apps/server` 测试文件纳入 TypeScript 类型检查（当前 tsconfig 排除 `*.test.ts`）；本步骤大量调整测试构造参数，类型回归不应只靠运行时暴露。
 - 更新服务端相关测试中的构造参数，确保原有业务测试断言保持不变。
 
+本地验证（2026-09-17）：新增 `test-support/container.ts` 共享测试容器工厂（`createContainerEnvironment`、`TEST_CONFIG`、`createIsolatedContainer`，含自动清理），消除 graph 与生命周期测试的三份重复 helper；单元测试继续手工 `new`，未强制改造。`application-runtime.test.ts` 新增监听失败测试：`node:net` 预占真实端口制造 `EADDRINUSE`，断言 `start()` rejects 且 `stop()` 仍释放数据库句柄，生命周期测试补齐正常启停、恢复失败、二次关闭、监听失败四类路径。`tsconfig.json` 改为全含 `src` 与 `test-support`（`noEmit`）供类型检查，新建 `tsconfig.build.json` 排除测试供构建，build 脚本同步切换——类型检查首次覆盖测试文件，暴露并修复 38 个存量类型错误（mock 字面量拓宽、`MonitoringSnapshot` 缺 `activeTaskId`、symbol resolve 缺显式泛型、node:http `RequestListener` 用法等八个文件；主要手段为 `satisfies` 保留 Mock 类型 + 类型化工厂函数）；ESLint 为 mock 签名参数增加下划线豁免。新增 `composition/architecture.test.ts` 三个静态架构检查：业务模块不得导入默认容器实例（Service Locator 入口），`createChildContainer`/`resolve()` 只出现在 `composition/container.ts` 与 `index.ts` 白名单，白名单文件确实执行容器操作（防止检查空壳化）；装饰器导入为既定方案，不在禁止之列。178 个 Vitest/Supertest 测试、类型检查 0 错误、ESLint、Prettier、生产构建（dist 零测试产物）和 dist 生命周期冒烟全部通过。
+
 **交付物**：
 
 - TSyringe 服务端依赖及 TypeScript 装饰器配置。
@@ -728,16 +730,16 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
 
 **验收条件**：
 
-- [ ] `index.ts` 只从应用 child container 解析 `ApplicationRuntime`，业务模块不直接访问容器。
-- [ ] `npm run dev`、`npm test` 与 `npm run build && npm start` 三个环境的容器解析行为一致，装饰器注入不依赖 `emitDecoratorMetadata`。
-- [ ] 所有进程级可变服务使用 `ContainerScoped`，未使用会跨 child 共享实例的 `@singleton()`。
-- [ ] 两个独立 child container 的 Store、Notifier、Scheduler 和 TaskEngine 实例互不共享。
-- [ ] 全部任务 Handler 可由容器组成完整注册表，任务类型覆盖保持不变。
-- [ ] 启动恢复及优雅关闭顺序与重构前一致，失败时不遗留数据库、HTTP、SSE、定时器或网络连接。
-- [ ] 单元测试可继续绕过容器直接构造服务，集成测试可通过 child container 覆盖依赖。
-- [ ] `runtime.ts`、`RuntimeDependencies` 和手工依赖装配被删除，不存在第二套组合根。
-- [ ] 数据库结构、共享 Schema、HTTP 响应、SSE 数据和自动切换安全边界无变化。
-- [ ] 全量 Vitest/Supertest 测试、类型检查、ESLint、Prettier、生产构建和 `git diff --check` 通过。
+- [x] `index.ts` 只从应用 child container 解析 `ApplicationRuntime`，业务模块不直接访问容器。
+- [x] `npm run dev`、`npm test` 与 `npm run build && npm start` 三个环境的容器解析行为一致，装饰器注入不依赖 `emitDecoratorMetadata`。
+- [x] 所有进程级可变服务使用 `ContainerScoped`，未使用会跨 child 共享实例的 `@singleton()`。
+- [x] 两个独立 child container 的 Store、Notifier、Scheduler 和 TaskEngine 实例互不共享。
+- [x] 全部任务 Handler 可由容器组成完整注册表，任务类型覆盖保持不变。
+- [x] 启动恢复及优雅关闭顺序与重构前一致，失败时不遗留数据库、HTTP、SSE、定时器或网络连接。
+- [x] 单元测试可继续绕过容器直接构造服务，集成测试可通过 child container 覆盖依赖。
+- [x] `runtime.ts`、`RuntimeDependencies` 和手工依赖装配被删除，不存在第二套组合根。
+- [x] 数据库结构、共享 Schema、HTTP 响应、SSE 数据和自动切换安全边界无变化。
+- [x] 全量 Vitest/Supertest 测试、类型检查、ESLint、Prettier、生产构建和 `git diff --check` 通过。
 
 **假设与默认选择**：
 

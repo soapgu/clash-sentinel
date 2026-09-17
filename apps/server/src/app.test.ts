@@ -131,30 +131,33 @@ async function createSetup(
     diagnose: vi.fn(async () => diagnosis()),
     readLatestDiagnosis: vi.fn(async () => diagnosis()),
     healthCheck: vi.fn(async () => ({
-      status: 'healthy',
+      status: 'healthy' as const,
       checkedAt: '2026-09-08 12:00:00 +0800',
       internetSuccess: 3,
       internetTotal: 3,
       currentIp: '198.51.100.20',
       consecutiveFailures: 0,
       recommendedIp: null,
+      profileUid: 'profile-main',
+      rawFingerprint: 'a'.repeat(64),
+      identityChanged: null,
     })),
     applyIp: vi.fn(async (ip: string) => ({
-      status: 'applied',
-      domain: 'entry.example.test',
+      status: 'applied' as const,
+      domain: 'entry.example.test' as string | null,
       ip,
       message: '应用成功',
     })),
     resetLock: vi.fn(async () => ({
-      status: 'reset',
-      domain: 'entry.example.test',
+      status: 'reset' as const,
+      domain: 'entry.example.test' as string | null,
       ip: null,
       message: '解除成功',
     })),
     rollback: vi.fn(async () => ({
-      status: 'rolled_back',
-      domain: 'entry.example.test',
-      ip: '198.51.100.20',
+      status: 'rolled_back' as const,
+      domain: 'entry.example.test' as string | null,
+      ip: '198.51.100.20' as string | null,
       message: '回滚成功',
     })),
     ...overrides,
@@ -219,6 +222,7 @@ async function createSetup(
       lastStartedAt: null,
       lastCompletedAt: null,
       nextRunAt: null,
+      activeTaskId: null,
     })),
   };
   setups.push({ root, store, taskEngine, notifier });
@@ -291,6 +295,7 @@ test('定时监测接口返回内存快照且重复读取没有副作用', async
       lastStartedAt: null,
       lastCompletedAt: null,
       nextRunAt: null,
+      activeTaskId: null,
     },
     {
       enabled: true,
@@ -298,6 +303,7 @@ test('定时监测接口返回内存快照且重复读取没有副作用', async
       lastStartedAt: '2026-09-09T04:00:00.000Z',
       lastCompletedAt: '2026-09-09T04:00:15.000Z',
       nextRunAt: '2026-09-09T04:01:15.000Z',
+      activeTaskId: null,
     },
     {
       enabled: true,
@@ -305,6 +311,7 @@ test('定时监测接口返回内存快照且重复读取没有副作用', async
       lastStartedAt: '2026-09-09T04:01:15.000Z',
       lastCompletedAt: '2026-09-09T04:00:15.000Z',
       nextRunAt: null,
+      activeTaskId: null,
     },
     {
       enabled: false,
@@ -312,6 +319,7 @@ test('定时监测接口返回内存快照且重复读取没有副作用', async
       lastStartedAt: '2026-09-09T04:01:15.000Z',
       lastCompletedAt: '2026-09-09T04:00:15.000Z',
       nextRunAt: null,
+      activeTaskId: null,
     },
     {
       enabled: false,
@@ -319,6 +327,7 @@ test('定时监测接口返回内存快照且重复读取没有副作用', async
       lastStartedAt: '2026-09-09T04:01:15.000Z',
       lastCompletedAt: '2026-09-09T04:01:30.000Z',
       nextRunAt: null,
+      activeTaskId: null,
     },
   ];
   for (const expected of states) {

@@ -9,6 +9,7 @@ import { createAppContainer } from './container.js';
 import { TOKENS } from './tokens.js';
 import { noopLogger, type AppLogger } from '../logging.js';
 import type { ServerConfig } from '../config.js';
+import type { RuntimePaths } from '../project-paths.js';
 
 /** 构造只依赖值 token 的测试容器，避免读取真实配置和输出日志。 */
 function createTestContainer(
@@ -67,7 +68,7 @@ describe('createAppContainer', () => {
       storage: { redactSensitiveData: true },
     });
     expect(child.resolve(TOKENS.clock)).toBe(Date.now);
-    const paths = child.resolve(TOKENS.runtimePaths);
+    const paths = child.resolve<RuntimePaths>(TOKENS.runtimePaths);
     expect(paths.projectRoot).toBeTypeOf('string');
     expect(paths.databasePath).toBeTypeOf('string');
   });

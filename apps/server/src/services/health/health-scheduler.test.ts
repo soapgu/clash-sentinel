@@ -14,6 +14,7 @@ import type {
   HealthCheckExecution,
 } from './health-check.js';
 import { HealthScheduler } from './health-scheduler.js';
+import type { TransientTaskOutcome } from '../tasks/task-engine.js';
 
 const cleanups: Array<{ root: string; store: SqliteStore }> = [];
 
@@ -37,27 +38,28 @@ async function setup(
   const healthCheck = { run: vi.fn(run) };
   const taskEngine = {
     getActiveTaskId: vi.fn((): string | null => null),
-    tryRunScheduledTask: vi.fn(() =>
-      (async () => {
-        try {
-          const value = await healthCheck.run();
-          const resources: StreamResource[] = [];
-          if (value.changes.statusUpdated) resources.push('status');
-          if (value.changes.sitesUpdated) resources.push('sites');
-          if (value.changes.candidatesUpdated) resources.push('candidates');
-          if (value.changes.eventAppended) resources.push('events');
-          if (value.changes.settingsUpdated) resources.push('settings');
-          resources.push(...(transientResources ?? []));
-          return { succeeded: true as const, changedResources: resources };
-        } catch (error) {
-          return {
-            succeeded: false as const,
-            changedResources: [] as StreamResource[],
-            error,
-            errorCode: 'INTERNAL_ERROR',
-          };
-        }
-      })(),
+    tryRunScheduledTask: vi.fn(
+      (_submission: { type: 'health_check' }, _executionId: string) =>
+        (async (): Promise<TransientTaskOutcome> => {
+          try {
+            const value = await healthCheck.run();
+            const resources: StreamResource[] = [];
+            if (value.changes.statusUpdated) resources.push('status');
+            if (value.changes.sitesUpdated) resources.push('sites');
+            if (value.changes.candidatesUpdated) resources.push('candidates');
+            if (value.changes.eventAppended) resources.push('events');
+            if (value.changes.settingsUpdated) resources.push('settings');
+            resources.push(...(transientResources ?? []));
+            return { succeeded: true, changedResources: resources };
+          } catch (error) {
+            return {
+              succeeded: false,
+              changedResources: [] as StreamResource[],
+              error,
+              errorCode: 'INTERNAL_ERROR',
+            };
+          }
+        })() as Promise<TransientTaskOutcome> | null,
     ),
   };
   const scheduler = new HealthScheduler(

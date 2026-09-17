@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "dev": "env -u NO_COLOR FORCE_COLOR=1 tsx watch src/index.ts"
   },
   "dependencies": {

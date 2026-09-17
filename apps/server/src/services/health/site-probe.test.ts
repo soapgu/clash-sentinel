@@ -1,4 +1,10 @@
-import { createServer, type Server } from 'node:http';
+import {
+  createServer,
+  type IncomingMessage,
+  type RequestListener,
+  type Server,
+  type ServerResponse,
+} from 'node:http';
 import { afterEach, expect, test, vi } from 'vitest';
 import { ProxyAgent } from 'undici';
 import { classifyProbeError, UndiciSiteProbe } from './site-probe.js';
@@ -21,7 +27,7 @@ afterEach(async () => {
 
 /** 启动仅供当前测试使用的回环 HTTP 服务。 */
 async function serve(
-  handler: Parameters<typeof createServer>[0],
+  handler: RequestListener<typeof IncomingMessage, typeof ServerResponse>,
 ): Promise<string> {
   const server = createServer(handler);
   servers.push(server);

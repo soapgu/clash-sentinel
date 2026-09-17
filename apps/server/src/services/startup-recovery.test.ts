@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest';
+import type { StreamResource } from '@clash-sentinel/shared';
 import { SqliteStore } from '../storage/store.js';
 import { recoverRuntimeState } from './startup-recovery.js';
 
@@ -20,7 +21,7 @@ function setup() {
       });
       return {
         recoveryStatus: 'unknown' as const,
-        changedResources: ['settings'] as const,
+        changedResources: ['settings'] as StreamResource[],
       };
     }),
   };

@@ -1,57 +1,20 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, expect, test, vi } from 'vitest';
-import type { ServerConfig } from './config.js';
-import { noopLogger } from './logging.js';
-import { createAppContainer } from './composition/container.js';
+import { createServer, type Server as NetServer } from 'node:net';
+import { rm } from 'node:fs/promises';
+import { expect, test, vi } from 'vitest';
+import { createIsolatedContainer } from '../test-support/container.js';
 import { ApplicationRuntime } from './application-runtime.js';
 import { TOKENS } from './composition/tokens.js';
 import type { SqliteStore } from './storage/store.js';
 import type { UndiciSiteProbe } from './services/health/site-probe.js';
 
-const cleanups: Array<{ root: string; store: SqliteStore }> = [];
-
-afterEach(async () => {
-  for (const item of cleanups.splice(0)) {
-    item.store.close();
-    await rm(item.root, { recursive: true, force: true });
-  }
-});
-
-/** 创建指向临时目录的环境变量，不触碰真实状态、报告和配置。 */
-async function createTestEnvironment() {
-  const root = await mkdtemp(join(tmpdir(), 'clash-runtime-'));
-  const environment = {
-    NODE_ENV: 'test',
-    CLASH_SENTINEL_DB_PATH: join(root, 'runtime.db'),
-    CLASH_SENTINEL_LEGACY_SCRIPT_PATH: join(root, 'legacy.sh'),
-    CLASH_APP_DIR: join(root, 'clash'),
-    CLASH_ENTRY_STATE_DIR: join(root, 'state'),
-    CLASH_ENTRY_REPORT_DIR: join(root, 'reports'),
-    CLASH_ENTRY_BACKUP_DIR: join(root, 'backups'),
-    CLASH_RUNTIME_CONFIG: join(root, 'runtime.yaml'),
-  };
-  return { root, environment };
-}
-
-const TEST_CONFIG: ServerConfig = {
-  logging: { redactSensitiveData: true },
-  storage: { redactSensitiveData: true },
-};
-
 test('完整生命周期：启动恢复、监听、请求、关闭且二次停止幂等', async () => {
-  const { root, environment } = await createTestEnvironment();
-  const child = createAppContainer({
-    environment,
-    config: TEST_CONFIG,
-    logger: noopLogger,
+  const { child, store } = await createIsolatedContainer({
+    prefix: 'clash-runtime-',
+    nodeEnv: 'test',
   });
   child.register(TOKENS.httpListen, {
     useValue: { port: 0, host: '127.0.0.1' },
   });
-  const store = child.resolve<SqliteStore>(TOKENS.sqliteStore);
-  cleanups.push({ root, store });
 
   const runtime = child.resolve(ApplicationRuntime);
   const server = await runtime.start();
@@ -62,9 +25,8 @@ test('完整生命周期：启动恢复、监听、请求、关闭且二次停�
   // NODE_ENV=test 时不启动调度器，状态保持 waiting 且没有定时器副作用。
   expect(runtime['scheduler'].getSnapshot().state).toBe('waiting');
 
-  const response = await fetch(
-    `http://127.0.0.1:${address && typeof address === 'object' ? address.port : 0}/api/health`,
-  );
+  const port = typeof address === 'object' && address ? address.port : 0;
+  const response = await fetch(`http://127.0.0.1:${port}/api/health`);
   expect(response.status).toBe(200);
   const body = (await response.json()) as { ok: boolean };
   expect(body.ok).toBe(true);
@@ -78,11 +40,8 @@ test('完整生命周期：启动恢复、监听、请求、关闭且二次停�
 });
 
 test('启动恢复失败时释放已构造的数据库和探测器句柄', async () => {
-  const { root, environment } = await createTestEnvironment();
-  const child = createAppContainer({
-    environment,
-    config: TEST_CONFIG,
-    logger: noopLogger,
+  const { child, root, environment } = await createIsolatedContainer({
+    prefix: 'clash-runtime-fail-',
   });
   const realStore = child.resolve<SqliteStore>(TOKENS.sqliteStore);
   const storeClosed = vi.fn();
@@ -108,4 +67,35 @@ test('启动恢复失败时释放已构造的数据库和探测器句柄', async
   await runtime.stop();
   expect(storeClosed).toHaveBeenCalledTimes(1);
   expect(probeClosed).toHaveBeenCalledTimes(1);
+  expect(environment).toBeDefined();
+});
+
+test('端口被占用时监听失败并释放已构造句柄', async () => {
+  // 先占用一个真实端口，制造 EADDRINUSE。
+  const blocker: NetServer = createServer();
+  const blockerPort = await new Promise<number>((resolvePromise) => {
+    blocker.listen(0, '127.0.0.1', () => {
+      const address = blocker.address();
+      resolvePromise(typeof address === 'object' && address ? address.port : 0);
+    });
+  });
+
+  const { child, store, root } = await createIsolatedContainer({
+    prefix: 'clash-runtime-port-',
+    nodeEnv: 'test',
+  });
+  child.register(TOKENS.httpListen, {
+    useValue: { port: blockerPort, host: '127.0.0.1' },
+  });
+
+  const runtime = child.resolve(ApplicationRuntime);
+  await expect(runtime.start()).rejects.toThrow(/EADDRINUSE|listen EADDRINUSE/);
+  // 监听失败不创建 HTTP 服务，stop 仍释放数据库句柄。
+  await runtime.stop();
+  expect(() => store.settings.getSettings()).toThrow();
+  await rm(root, { recursive: true, force: true });
+
+  await new Promise<void>((resolvePromise) => {
+    blocker.close(() => resolvePromise());
+  });
 });

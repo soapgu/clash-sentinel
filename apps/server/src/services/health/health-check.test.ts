@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, expect, test, vi } from 'vitest';
 import type {
   DiagnosisResult,
+  HealthCheckResult,
   LegacyStatus,
   SiteErrorType,
   SiteResult,
@@ -11,6 +12,7 @@ import type {
 } from '@clash-sentinel/shared';
 import { SqliteStore } from '../../storage/store.js';
 import { HealthCheckService } from './health-check.js';
+import type { HealthLegacyOperations } from './health-check.js';
 import type { SiteProbe, SiteProbeRequest } from './site-probe.js';
 
 const cleanups: Array<{ root: string; store: SqliteStore }> = [];
@@ -41,6 +43,22 @@ function result(
 }
 
 /** 返回带一个合格候选的虚构诊断。 */
+/** 返回默认健康的 Legacy 健康检查结果；测试可覆写字段。 */
+function healthResult(): HealthCheckResult {
+  return {
+    status: 'healthy',
+    checkedAt: '2026-09-09 12:00:00 +0800',
+    internetSuccess: 3,
+    internetTotal: 3,
+    currentIp: '198.51.100.20',
+    consecutiveFailures: 0,
+    recommendedIp: null,
+    profileUid: 'profile-demo',
+    rawFingerprint: 'a'.repeat(64),
+    identityChanged: null,
+  };
+}
+
 function diagnosis(): DiagnosisResult {
   return {
     status: 'testable',
@@ -95,20 +113,9 @@ async function setup(
   };
   const legacy = {
     getStatus: vi.fn(async () => status),
-    healthCheck: vi.fn(async () => ({
-      status: 'healthy' as const,
-      checkedAt: '2026-09-09 12:00:00 +0800',
-      internetSuccess: 3,
-      internetTotal: 3,
-      currentIp: '198.51.100.20',
-      consecutiveFailures: 0,
-      recommendedIp: null,
-      profileUid: 'profile-demo',
-      rawFingerprint: 'a'.repeat(64),
-      identityChanged: null,
-    })),
+    healthCheck: vi.fn(async () => healthResult()),
     diagnose: vi.fn(async () => diagnosis()),
-  };
+  } satisfies HealthLegacyOperations;
   const service = new HealthCheckService(
     store.settings,
     store.health,
@@ -377,9 +384,11 @@ for (const [name, patch] of [
   });
 }
 
-for (const [name, outcomes, statusOverrides] of [
+const noAutoSwitchCases: Array<
+  [string, Partial<Record<SiteTarget, SiteResult>>, Partial<LegacyStatus>]
+> = [
   ['未锁定 IP', {}, { lock: { locked: false } }],
-  ['无当前订阅', {}, { profile: null }],
+  ['无当前订阅', {}, { profile: null } as unknown as Partial<LegacyStatus>],
   [
     '国内网络不确定',
     {
@@ -388,7 +397,8 @@ for (const [name, outcomes, statusOverrides] of [
     },
     {},
   ],
-] as const) {
+];
+for (const [name, outcomes, statusOverrides] of noAutoSwitchCases) {
   test(`${name}时不返回自动切换请求`, async () => {
     const value = await setup(outcomes, statusOverrides);
     value.store.settings.updateSettings({
