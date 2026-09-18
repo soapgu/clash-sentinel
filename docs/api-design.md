@@ -1,8 +1,13 @@
 # Clash Sentinel API 设计
 
-状态：Step 5、Step 8 和 Step 9 已实现契约。共享 Zod Schema、Koa 路由和测试必须与本文一致。
+状态：已实现的 HTTP/SSE 契约专题，最近于 2026-09-18（Step 17）按当前实现核对。
 
+本文只定义精确的外部契约；系统边界、模块协作和关键流程见[服务端设计总览](server-design.md)。
 依据：[项目规划](../PROJECT_PLAN.md)、[实施步骤](../STEP.md)、[数据库设计](database-design.md)。
+
+契约的最终事实源是 `packages/shared/src/` 中的 Zod Schema，以及
+`apps/server/src/api/router.ts`、`app.ts` 和 `api/errors.ts`。修改路由、共享 DTO、错误码或 SSE
+语义时，必须在同一个变更中更新本文。
 
 ## 1. 通用约定
 
@@ -911,7 +916,7 @@ flowchart TD
 - `monitoringEnabled=false` 时不发出检测请求，但继续按设置周期复查开关。
 - 定时轮次与手动动作共用全局槽；手动任务运行时静默跳过定时轮次，定时检测运行时手动动作返回 `409`。
 - 定时轮次不创建 `StoredTask`，只更新六站历史、当前快照、综合健康快照，并在综合状态变化或整轮失败时记录普通事件。
-- Step 8 将通过 `GET /api/monitoring` 只读暴露本进程内的调度状态和实际下一次计划时间；这些运行时间不持久化。
+- `GET /api/monitoring` 只读暴露本进程内的调度状态和实际下一次计划时间；这些运行时间不持久化。
 - 百度、淘宝、腾讯显式绕过代理；Google、GitHub 和 OpenAI 状态经 Clash 本机代理访问。国内只有一个成功时不评价入口，全部失败时判为断网。
 - 站点超过两个检测周期未更新时，`GET /api/sites` 动态返回 `stale: true`。
 
@@ -934,7 +939,7 @@ flowchart TD
 仅在启动时读取且不属于公开 API。配置不存在、YAML 非法、字段缺失、类型错误或包含未知字段时，
 启动入口使用默认开启脱敏的临时日志器记录 `configuration load failed` 后以退出码 1 结束。
 
-收到 `SIGINT` 或 `SIGTERM` 后停止调度、HTTP 和新任务，等待当前手动或定时检测结束，关闭 HTTP 连接池，再关闭 SQLite。监听失败也必须关闭数据库。
+启动、恢复和停机的完整顺序由 `ApplicationRuntime` 编排，见[服务端设计总览](server-design.md#6-运行时生命周期)。收到 `SIGINT` 或 `SIGTERM` 后先停止接收新任务、停止调度器并关闭 SSE，再并行关闭 HTTP、等待调度停止和任务空闲，最后释放 HTTP 探测器和 SQLite。监听失败也必须进入同一资源释放路径。
 
 ## 8. 安全边界
 

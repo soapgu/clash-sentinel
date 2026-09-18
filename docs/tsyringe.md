@@ -1,6 +1,14 @@
 # TSyringe 知识点
 
-本文沉淀 TSyringe 4.10.0 的核心机制与本项目（clash-sentinel 服务端）的使用约定。知识点来源分三层标注：
+> 定位：服务端依赖注入实现专题
+>
+> 状态：TSyringe 4.10.0，最近于 2026-09-18（Step 17）按容器实现核对
+
+本文沉淀 TSyringe 4.10.0 的核心机制与 Clash Sentinel 服务端的使用约定。系统上下文、组件关系
+和完整生命周期见[服务端设计总览](server-design.md)。容器行为的最终事实源是
+`apps/server/src/composition/`、`application-runtime.ts` 和相应测试；依赖装配变化必须同步更新本文。
+
+知识点来源分三层标注：
 
 - **[README]** — 官方文档（[microsoft/tsyringe](https://github.com/microsoft/tsyringe)）明确记载
 - **[源码]** — 4.10.0 实现源码（`node_modules/tsyringe/dist/cjs/`）核实，README 未明说
@@ -227,6 +235,7 @@ Step 16 建立的使用约定，供后续维护对照：
 | `apps/server/src/composition/tokens.ts` | 23 个 Symbol token 与 `TokenTypes` 类型映射 |
 | `apps/server/src/composition/container.ts` | `createAppContainer()` 容器工厂（唯一合法容器入口） |
 | `apps/server/src/application-runtime.ts` | 唯一应用根（start/stop 生命周期编排） |
-| `apps/server/src/composition/container.test.ts` | 注入机制冒烟（5 个测试） |
-| `apps/server/src/composition/graph.test.ts` | 完整依赖图解析与隔离（6 个测试） |
-| `apps/server/src/application-runtime.test.ts` | 生命周期测试（2 个测试） |
+| `apps/server/src/composition/container.test.ts` | 注入机制与作用域冒烟 |
+| `apps/server/src/composition/graph.test.ts` | 完整依赖图解析、隔离与覆盖 |
+| `apps/server/src/composition/architecture.test.ts` | Service Locator 静态架构约束 |
+| `apps/server/src/application-runtime.test.ts` | 正常及失败路径的生命周期测试 |

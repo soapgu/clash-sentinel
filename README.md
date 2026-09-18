@@ -2,7 +2,7 @@
 
 Clash Sentinel 是面向 macOS 与 Clash Verge Rev / Mihomo 的本机连接健康监测和入口 IP 自动恢复服务。
 
-> 当前状态：工程骨架、Legacy 适配层、本地 SQLite、Koa API、定时健康检测、SSE、正式 Web 看板、手动操作和自动切换闭环已完成，任务执行入口、健康检查与自动切换职责以及任务 Handler 目录也已完成重构整理。页面已支持自动切换确认、实时任务跟踪、冷却提示和异常后的安全停用；下一阶段进行终端运行版 MVP 总验收。
+> 当前状态：服务端功能闭环、运行时依赖装配和服务端设计文档已经完成。页面已支持自动切换确认、实时任务跟踪、冷却提示和异常后的安全停用；下一阶段完善前端设计文档并据此复核页面结构。
 
 ## 安装与运行
 
@@ -61,9 +61,13 @@ Legacy 适配层使用参数数组启动脚本，不经过 Shell 拼接；为不
 完整订阅正文、Mihomo 密钥或非必要本机路径。关闭存储脱敏只影响服务启动后的新写入，
 不会恢复已经脱敏的历史内容，也不会自动清洗历史明文。站点历史及普通、关键事件分别按数量上限清理，
 当前快照和最近诊断不参与历史清理。
-完整表结构、关系、事务和安全规则见[数据库设计文档](docs/database-design.md)。
-接口契约、任务语义和错误码见 [API 设计文档](docs/api-design.md)。
-页面布局、状态表达和交互基准见[高保真可交互原型](docs/design/high-fidelity/README.md)。
+设计文档导航：
+
+- [服务端设计总览](docs/server-design.md)：系统边界、组件、关键流程、生命周期、安全和设计决策。
+- [API 设计](docs/api-design.md)：HTTP/SSE 契约、任务语义和错误码。
+- [数据库设计](docs/database-design.md)：表结构、迁移、事务、恢复和保留规则。
+- [TSyringe 专题](docs/tsyringe.md)：依赖注入机制、容器作用域和项目约束。
+- [高保真可交互原型](docs/design/high-fidelity/README.md)：页面布局、状态表达和交互基准。
 
 ```bash
 npm run format:check
