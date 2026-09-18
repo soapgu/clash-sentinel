@@ -2,7 +2,7 @@
 
 Clash Sentinel 是面向 macOS 与 Clash Verge Rev / Mihomo 的本机连接健康监测和入口 IP 自动恢复服务。
 
-> 当前状态：服务端功能闭环、运行时依赖装配和服务端设计文档已经完成。页面已支持自动切换确认、实时任务跟踪、冷却提示和异常后的安全停用；下一阶段完善前端设计文档并据此复核页面结构。
+> 当前状态：服务端功能闭环及服务端、前端设计文档已经完成。页面已支持自动切换确认、实时任务跟踪、冷却提示和异常后的安全停用；下一阶段将依据重构专题拆分 Dashboard，保持现有行为与视觉不变。
 
 ## 安装与运行
 
@@ -65,6 +65,8 @@ Legacy 适配层使用参数数组启动脚本，不经过 Shell 拼接；为不
 
 - [服务端设计总览](docs/server-design.md)：系统边界、组件、关键流程、生命周期、安全和设计决策。
 - [服务端类与接口设计](docs/server-class-design.md)：生产类、基础接口、公共成员和分系统 UML 类图。
+- [前端设计总览](docs/frontend-design.md)：当前页面能力、数据流、状态模型、交互和质量边界。
+- [Dashboard 重构设计](docs/dashboard-refactor-design.md)：Step 19 的组件、Hooks、样式拆分和验收蓝图。
 - [API 设计](docs/api-design.md)：HTTP/SSE 契约、任务语义和错误码。
 - [数据库设计](docs/database-design.md)：表结构、迁移、事务、恢复和保留规则。
 - [TSyringe 专题](docs/tsyringe.md)：依赖注入机制、容器作用域和项目约束。

@@ -797,17 +797,68 @@ Vitest/Supertest 测试全部通过。完整测试需允许监听本机回环临
 
 **前置依赖**：Step 17。
 
-**状态**：待规划。
+**状态**：已完成。
 
-**任务、交付物与验收条件**：待后续细化。
+**任务**：
+
+- 新增前端设计总览，说明技术栈、运行边界、事实源、当前页面能力和信息架构。
+- 记录七类只读快照、SSE 失效通知、断线降级、异步任务恢复、设置保存和五类手动操作流程。
+- 固化加载、离线、部分失败、过期、冲突、任务恢复、响应式、键盘与焦点等状态约束。
+- 新增 Dashboard 重构专题，将组件、Hooks、纯函数和样式拆分设计为 Step 19 的实施蓝图。
+- 更新 README 与高保真原型导航，区分视觉基线、运行事实源和目标结构。
+
+**交付物**：
+
+- [`docs/frontend-design.md`](docs/frontend-design.md) 前端设计总览。
+- [`docs/dashboard-refactor-design.md`](docs/dashboard-refactor-design.md) Dashboard 重构专题。
+- README、高保真原型说明和本步骤的导航、任务、验收及验证记录。
+
+**验收条件**：
+
+- [x] 总览覆盖当前 Dashboard 的查询、Mutation、SSE、任务、设置、操作和主要展示区域。
+- [x] 精确 API 字段仍以共享 Schema 和 API 专题为事实源，文档未复制形成第二份契约。
+- [x] Mermaid 图覆盖当前组件关系、查询同步、任务跟踪和危险操作流程。
+- [x] 状态模型覆盖首次加载、刷新、后台离线、SSE 降级、部分失败、过期、冲突和恢复异常。
+- [x] 响应式、ARIA、焦点恢复、安全错误、浏览器存储和读取无副作用边界已明确。
+- [x] 重构专题明确五个 Hooks、展示组件、纯模块、CSS 拆分、依赖方向和尺寸约束。
+- [x] 所有目标结构均标记“待 Step 19 实现”，没有把设计目标描述为当前实现。
+- [x] 本步骤只修改 Markdown 文档，不改变运行时代码、依赖、公共 API 或共享 Schema。
+
+本地验证（2026-09-18）：前端设计与当前 7 类 Dashboard Query、5 类手动操作、SSE 精确失效与
+降级同步、任务会话恢复、设置保存、900px/620px 响应式断点逐项核对；Markdown 相对链接和
+Mermaid 代码围栏检查通过。Prettier、ESLint、TypeScript 类型检查、生产构建、完整测试及
+`git diff --check` 均通过。
 
 ### Step 19：根据前端设计文档重构前端页面
 
 **前置依赖**：Step 18。
 
-**状态**：待规划。
+**状态**：待实现。
 
-**任务、交付物与验收条件**：待前端设计文档完善后细化。
+**任务**：
+
+- 按 [`docs/dashboard-refactor-design.md`](docs/dashboard-refactor-design.md) 提取类型、格式化函数和站点元数据。
+- 将 Dashboard 拆为页面编排入口、职责单一的展示组件及数据、SSE、任务、操作和设置 Hooks。
+- 按基础、布局、状态、功能区、浮层和响应式拆分样式，保持选择器层叠和视觉不变。
+- 引入 Testing Library 与 jsdom，为组件、焦点、表单、任务恢复和 Hook 协作补测试。
+- 完成后同步更新前端总览，并删除重构专题中的“待 Step 19 实现”标记。
+
+**交付物**：
+
+- `apps/web/src/dashboard` 下的页面、组件、Hooks、纯模块和样式模块。
+- React 组件与 Hook 测试，以及持续通过的既有单元和端到端测试。
+- 更新后的前端设计总览和 Dashboard 重构专题。
+
+**验收条件**：
+
+- [ ] `Dashboard.tsx` 只负责组合且不超过 250 行；单组件不超过 300 行，单 Hook 不超过 250 行。
+- [ ] 展示组件不直接调用 API、`QueryClient`、`sessionStorage` 或 `DashboardStream`。
+- [ ] 不存在万能 Dashboard Hook、巨型 Props 对象或新旧双份实现。
+- [ ] API、Query Key、SSE、任务轮询、确认文案、焦点、ARIA、900px/620px 断点和视觉结果保持不变。
+- [ ] 设置、危险操作、任务恢复、冲突接管、SSE 降级、错误和过期状态具有组件或 Hook 测试。
+- [ ] 1440px、390px 及断点两侧通过视觉和交互复核。
+- [ ] 格式、lint、类型检查、单元测试、生产构建、Playwright 和 `git diff --check` 全部通过。
+
 
 ### Step 20：终端运行与 MVP 验收
 
