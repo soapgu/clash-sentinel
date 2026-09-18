@@ -768,6 +768,7 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
 **交付物**：
 
 - [`docs/server-design.md`](docs/server-design.md) 服务端统一设计入口。
+- [`docs/server-class-design.md`](docs/server-class-design.md) 服务端生产类、接口、成员和 UML 专题。
 - [`docs/api-design.md`](docs/api-design.md) HTTP/SSE 契约专题。
 - [`docs/database-design.md`](docs/database-design.md) SQLite 存储专题。
 - [`docs/tsyringe.md`](docs/tsyringe.md) 依赖注入实现专题。
@@ -776,6 +777,7 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
 **验收条件**：
 
 - [x] 总览覆盖服务端边界、组件、领域映射、六类任务、健康检测、自动切换、SSE、启停和恢复流程。
+- [x] 类与接口专题覆盖生产类、基础契约、公共成员、构造依赖和按子系统拆分的 UML 类图。
 - [x] 所有 Koa 路由、SQLite 表、迁移字段、任务状态和容器约束都有唯一的精确专题或代码事实源。
 - [x] 主文档解释整体协作，专题文档维护精确契约，不复制形成第二份事实源。
 - [x] 架构、时序和状态图均为仓库内 Mermaid，不依赖飞书图片或外部制图文件。
@@ -784,9 +786,10 @@ Step 14 完成后，继续围绕存储职责、自动切换策略和共享契约
 - [x] README 可进入服务端总览，并继续导航到 API、数据库和依赖注入专题。
 - [x] 本步骤只修改 Markdown 文档，不改变运行时代码、公共 API、共享 Schema 或数据库迁移。
 
-本地验证（2026-09-18）：15 个 Koa 路由、9 张 SQLite 表、6 种任务类型及全部任务状态/恢复结论
-与专题文档逐项比对无遗漏；Markdown 相对链接和 Mermaid 代码围栏检查通过。Prettier、ESLint、
-TypeScript 类型检查、生产构建、`git diff --check` 以及 35 个测试文件中的 179 个
+本地验证（2026-09-18）：15 个 Koa 路由、9 张 SQLite 表、6 种任务类型、全部任务状态/恢复结论，
+以及 29 个生产类、34 个生产接口和 258 个非私有成员均与专题文档逐项比对无遗漏；Markdown
+相对链接和 Mermaid 代码围栏检查通过。
+Prettier、ESLint、TypeScript 类型检查、生产构建、`git diff --check` 以及 35 个测试文件中的 179 个
 Vitest/Supertest 测试全部通过。完整测试需允许监听本机回环临时端口；受限沙箱内会以 `EPERM`
 失败，在允许回环监听的环境重跑后通过。
 

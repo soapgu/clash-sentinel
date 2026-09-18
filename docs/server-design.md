@@ -10,7 +10,8 @@
 
 本文是服务端设计的统一入口，说明系统为何这样设计以及各部分如何协作。精确的 HTTP/SSE
 契约见 [API 设计](api-design.md)，精确的 SQLite 结构见[数据库设计](database-design.md)，依赖注入
-机制和项目约束见 [TSyringe 专题](tsyringe.md)。
+机制和项目约束见 [TSyringe 专题](tsyringe.md)，生产类、接口、公共成员和 UML 关系见
+[类与接口设计](server-class-design.md)。
 
 ## 1. 文档约定与事实源
 

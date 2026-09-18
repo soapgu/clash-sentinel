@@ -3,7 +3,8 @@
 状态：已实现的 SQLite 存储专题，最近于 2026-09-18（Step 17）按迁移与仓储实现核对。
 
 本文说明本地 SQLite 数据结构、约束、事务和维护规则。系统上下文和跨模块数据流见
-[服务端设计总览](server-design.md)。数据库结构以
+[服务端设计总览](server-design.md)，连接、Store 和 Repository 成员见
+[类与接口设计](server-class-design.md)。数据库结构以
 [`migrations.ts`](../apps/server/src/storage/migrations.ts) 为最终事实，数据访问行为以
 `storage/` 下的六个领域仓储为最终事实。修改迁移、仓储映射、事务或保留规则时，必须在同一个
 变更中更新本文。

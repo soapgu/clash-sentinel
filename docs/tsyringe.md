@@ -5,7 +5,8 @@
 > 状态：TSyringe 4.10.0，最近于 2026-09-18（Step 17）按容器实现核对
 
 本文沉淀 TSyringe 4.10.0 的核心机制与 Clash Sentinel 服务端的使用约定。系统上下文、组件关系
-和完整生命周期见[服务端设计总览](server-design.md)。容器行为的最终事实源是
+和完整生命周期见[服务端设计总览](server-design.md)，实际注入类、接口和成员见
+[类与接口设计](server-class-design.md)。容器行为的最终事实源是
 `apps/server/src/composition/`、`application-runtime.ts` 和相应测试；依赖装配变化必须同步更新本文。
 
 知识点来源分三层标注：

@@ -64,6 +64,7 @@ Legacy 适配层使用参数数组启动脚本，不经过 Shell 拼接；为不
 设计文档导航：
 
 - [服务端设计总览](docs/server-design.md)：系统边界、组件、关键流程、生命周期、安全和设计决策。
+- [服务端类与接口设计](docs/server-class-design.md)：生产类、基础接口、公共成员和分系统 UML 类图。
 - [API 设计](docs/api-design.md)：HTTP/SSE 契约、任务语义和错误码。
 - [数据库设计](docs/database-design.md)：表结构、迁移、事务、恢复和保留规则。
 - [TSyringe 专题](docs/tsyringe.md)：依赖注入机制、容器作用域和项目约束。

@@ -2,7 +2,8 @@
 
 状态：已实现的 HTTP/SSE 契约专题，最近于 2026-09-18（Step 17）按当前实现核对。
 
-本文只定义精确的外部契约；系统边界、模块协作和关键流程见[服务端设计总览](server-design.md)。
+本文只定义精确的外部契约；系统边界、模块协作和关键流程见[服务端设计总览](server-design.md)，
+路由依赖和相关类型成员见[类与接口设计](server-class-design.md)。
 依据：[项目规划](../PROJECT_PLAN.md)、[实施步骤](../STEP.md)、[数据库设计](database-design.md)。
 
 契约的最终事实源是 `packages/shared/src/` 中的 Zod Schema，以及
