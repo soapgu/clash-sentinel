@@ -1,4 +1,5 @@
 import type {
+  HealthCheckResult,
   HealthSnapshot,
   LegacyStatus,
   SiteResult,
@@ -207,15 +208,16 @@ export class HealthCheckService {
     const status = await this.readStatusSafely();
     const directSuccess = directResults.filter((item) => item.reachable).length;
     let snapshot = this.baseSnapshot(previous, status, directSuccess);
-    let identityChanged: 'profile' | 'content' | null =
-      previous?.profile && status && previous.profile.uid !== status.profile.uid
-        ? 'profile'
-        : null;
-
-    if (directSuccess >= 2 && status?.lock.locked) {
-      const legacyHealth = await this.legacy.healthCheck(
-        settings.entryFailureThreshold,
-      );
+    const snapshotIdentityChange = this.detectSnapshotIdentityChange(
+      previous,
+      status,
+    );
+    const legacyHealth = await this.runLegacyHealthCheckIfAvailable(
+      directSuccess,
+      status,
+      settings.entryFailureThreshold,
+    );
+    if (legacyHealth) {
       snapshot = {
         ...snapshot,
         status: legacyHealth.status,
@@ -224,8 +226,9 @@ export class HealthCheckService {
         consecutiveFailures: legacyHealth.consecutiveFailures,
         recommendedIp: legacyHealth.recommendedIp,
       };
-      identityChanged = legacyHealth.identityChanged ?? identityChanged;
     }
+    const legacyIdentityChange = legacyHealth?.identityChanged ?? null;
+    const identityChanged = legacyIdentityChange ?? snapshotIdentityChange;
     if (identityChanged) {
       if (this.diagnoses.clearDiagnosis()) changes.candidatesUpdated = true;
       snapshot.consecutiveFailures = 0;
@@ -352,6 +355,25 @@ export class HealthCheckService {
       });
       return null;
     }
+  }
+
+  /** 根据前后状态中的订阅 UID 判断是否切换了订阅。 */
+  private detectSnapshotIdentityChange(
+    previous: HealthSnapshot | null,
+    status: LegacyStatus | null,
+  ): 'profile' | null {
+    if (!previous?.profile || !status) return null;
+    return previous.profile.uid !== status.profile.uid ? 'profile' : null;
+  }
+
+  /** 在互联网基线正常且当前订阅已锁定入口时执行 Legacy 健康检查。 */
+  private async runLegacyHealthCheckIfAvailable(
+    directSuccess: number,
+    status: LegacyStatus | null,
+    failureThreshold: number,
+  ): Promise<HealthCheckResult | null> {
+    if (directSuccess < 2 || !status?.lock.locked) return null;
+    return this.legacy.healthCheck(failureThreshold);
   }
 
   /** 根据国内成功数创建不评价入口的基础快照。 */
