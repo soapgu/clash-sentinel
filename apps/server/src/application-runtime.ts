@@ -11,6 +11,7 @@ import type { StatusNotificationCenter } from './services/status-notifier.js';
 import type { TaskEngine } from './services/tasks/task-engine.js';
 import type { SqliteStore } from './storage/store.js';
 import type { AppLogger } from './logging.js';
+import type { LegacyAdapter } from './legacy/adapter.js';
 
 /** 生产应用唯一根：编排启动恢复、HTTP 监听、调度器和优雅关闭。 */
 @injectable()
@@ -33,6 +34,8 @@ export class ApplicationRuntime {
     private readonly environment: NodeJS.ProcessEnv,
     @inject(TOKENS.httpListen)
     private readonly listen: { port: number; host: string },
+    @inject(TOKENS.legacyAdapter)
+    private readonly legacy: LegacyAdapter,
   ) {}
 
   /** 入口和外部编排使用的统一日志器。 */
@@ -54,6 +57,21 @@ export class ApplicationRuntime {
     this.loggerValue.info('storage:sqlite', 'runtime state recovered', {
       recoveredTasks,
     });
+
+    // 状态命令只读；本机 Clash 暂不可用时仍提供 Web 页面和诊断入口。
+    try {
+      const status = await this.legacy.getStatus();
+      if (!status.controllerAvailable)
+        this.loggerValue.warn(
+          'app:bootstrap',
+          'Mihomo control interface unavailable; starting in degraded mode',
+        );
+    } catch {
+      this.loggerValue.warn(
+        'app:bootstrap',
+        'Clash configuration unavailable; starting in degraded mode',
+      );
+    }
 
     const app = createApp({
       store: this.store,

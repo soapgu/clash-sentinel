@@ -83,8 +83,12 @@ test('完整快照展示入口、六站、候选和官方服务状态', async ({
 });
 
 test('首次加载与空快照使用独立状态且不会触发检测', async ({ page }) => {
+  let releaseStatus!: () => void;
+  const statusGate = new Promise<void>((resolve) => {
+    releaseStatus = resolve;
+  });
   await page.route('**/api/status', async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await statusGate;
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -100,6 +104,7 @@ test('首次加载与空快照使用独立状态且不会触发检测', async ({
   );
   await page.goto('/');
   await expect(page.getByText('正在读取已有快照')).toBeVisible();
+  releaseStatus();
   await expect(
     page.getByRole('heading', { name: '尚未识别订阅' }),
   ).toBeVisible();

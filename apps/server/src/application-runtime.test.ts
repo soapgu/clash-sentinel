@@ -4,6 +4,9 @@ import { expect, test, vi } from 'vitest';
 import { createIsolatedContainer } from '../test-support/container.js';
 import { ApplicationRuntime } from './application-runtime.js';
 import { TOKENS } from './composition/tokens.js';
+import { noopLogger } from './logging.js';
+import type { LegacyAdapter } from './legacy/adapter.js';
+import type { LegacyStatus } from '@clash-sentinel/shared';
 import type { SqliteStore } from './storage/store.js';
 import type { HealthScheduler } from './services/health/health-scheduler.js';
 import type { UndiciSiteProbe } from './services/health/site-probe.js';
@@ -39,6 +42,47 @@ test('完整生命周期：启动恢复、监听、请求、关闭且二次停�
   // 二次停止保持幂等，不重复关闭或抛错。
   await expect(runtime.stop()).resolves.toBeUndefined();
 });
+
+test.each([
+  {
+    unavailable: 'controller',
+    warning: 'Mihomo control interface unavailable',
+  },
+  { unavailable: 'config', warning: 'Clash configuration unavailable' },
+])(
+  '启动检查遇到 $unavailable 不可用时降级提供页面',
+  async ({ unavailable, warning }) => {
+    const logger = { ...noopLogger, warn: vi.fn() };
+    const { child } = await createIsolatedContainer({
+      prefix: 'clash-runtime-degraded-',
+      logger,
+      nodeEnv: 'test',
+    });
+    child.register(TOKENS.httpListen, {
+      useValue: { port: 0, host: '127.0.0.1' },
+    });
+    const legacy = child.resolve<LegacyAdapter>(TOKENS.legacyAdapter);
+    if (unavailable === 'config')
+      vi.spyOn(legacy, 'getStatus').mockRejectedValue(new Error('missing'));
+    else
+      vi.spyOn(legacy, 'getStatus').mockResolvedValue({
+        controllerAvailable: false,
+      } as LegacyStatus);
+
+    const runtime = child.resolve(ApplicationRuntime);
+    const server = await runtime.start();
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+    expect((await fetch(`http://127.0.0.1:${port}/api/health`)).status).toBe(
+      200,
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      'app:bootstrap',
+      expect.stringContaining(warning),
+    );
+    await runtime.stop();
+  },
+);
 
 test('启动恢复失败时释放已构造的数据库和探测器句柄', async () => {
   const { child, root, environment } = await createIsolatedContainer({

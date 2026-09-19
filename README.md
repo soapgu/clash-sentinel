@@ -2,11 +2,12 @@
 
 Clash Sentinel 是面向 macOS 与 Clash Verge Rev / Mihomo 的本机连接健康监测和入口 IP 自动恢复服务。
 
-> 当前状态：服务端功能闭环、前后端设计文档及 Dashboard 模块化重构已经完成。页面已支持自动切换确认、实时任务跟踪、冷却提示和异常后的安全停用；下一阶段进入终端运行与 MVP 验收。
+> 当前版本：0.1.0。终端运行与 MVP 验收记录见 [Step 20 验收记录](docs/step-20-acceptance.md)。
 
 ## 安装与运行
 
 使用 Node.js 24 LTS 和 npm。项目通过 `.nvmrc` 与 `.node-version` 标识 Node 主版本，CI 同样使用 Node.js 24。
+需要 macOS 和已配置的 Clash Verge Rev / Mihomo；缺少 Clash 配置或控制接口时服务会告警并降级启动，页面仍可查看已有记录，检测及配置操作会报告失败。启动前确认 3000 端口空闲。`.env.example` 列出可选路径覆盖项；程序不会自动加载该文件，如需覆盖请在终端显式导出变量。
 
 ```bash
 npm ci
@@ -24,7 +25,7 @@ npm start
 
 打开 [http://127.0.0.1:3000](http://127.0.0.1:3000)，页面与 API 均由 Koa 提供。端口占用会报错退出，不自动更换端口。按 `Ctrl+C` 停止服务。
 
-`GET /api/health` 仅确认后台进程可以响应，不代表 Clash 或互联网健康。占位页通过真实请求显示后台连接结果。
+`GET /api/health` 仅确认后台进程可以响应，不代表 Clash 或互联网健康。退出时停止接收任务与 SSE 连接，等待已开始的操作及恢复步骤结束后关闭数据库；操作进行中请等待退出完成，不要连续按两次 `Ctrl+C` 强制退出。
 
 ## 工程与检查
 
@@ -51,6 +52,7 @@ Legacy 适配层使用参数数组启动脚本，不经过 Shell 拼接；为不
 读取，不支持热更新，也不通过 HTTP API 或 SQLite 暴露。日志与 SQLite 脱敏分别由
 `logging.redactSensitiveData` 和 `storage.redactSensitiveData` 控制，默认均为 `true`；设为
 `false` 会在对应范围完整保留凭据、URL 和本机路径，存在明确的敏感信息泄露风险。
+正常运行请保持两个脱敏开关为 `true`。不要提交 `.env`、真实配置、数据库、报告或备份；操作可能重载 Mihomo 并短暂影响代理连接，首次启用自动切换前应确认受管订阅和候选 IP。
 
 本地存储使用同步、事务化的 SQLite，默认数据库位于仓库根目录的
 `.state/clash-sentinel.db`，不受 npm workspace 当前目录影响。可以通过
@@ -84,6 +86,7 @@ npm run test:e2e
 `npm run test:e2e` 会构建并启动生产服务，要求端口 3000 空闲。`npm run format` 用于格式化新增工程文件，已验收的设计文档和图稿排除在格式化范围之外。
 
 GitHub Actions 在 push 和 pull request 时使用 macOS runner 执行上述检查，失败时保存 Playwright 报告与追踪文件。本阶段未配置自动发布或部署。
+首版发布说明及已知限制见 [v0.1.0 发布说明](docs/releases/v0.1.0.md)。发布物为 GitHub 自动生成的源码包，不包含本机运行数据；检出后需自行安装依赖并构建。
 
 ## 核心能力
 
