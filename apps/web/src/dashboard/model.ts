@@ -3,7 +3,5 @@ export type DashboardAction =
 
 export type DashboardStreamState = 'connecting' | 'connected' | 'offline';
 
-export interface Confirmation {
-  action: Extract<DashboardAction, 'apply' | 'reset' | 'rollback'> | 'auto';
-  ip?: string;
-}
+export type Confirmation =
+  { action: 'apply'; ip?: string } | { action: 'reset' | 'rollback' | 'auto' };

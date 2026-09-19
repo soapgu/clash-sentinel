@@ -4,18 +4,22 @@ import { api, ApiClientError, type ManualAction } from '../../api.js';
 import { formatApiError } from '../formatters.js';
 import type { Confirmation } from '../model.js';
 
+interface DashboardActionsOptions {
+  busy: boolean;
+  onTaskCreated: (taskId: string) => void;
+  onEnableAuto: () => void;
+}
+
 export function useDashboardActions({
   busy,
   onTaskCreated,
   onEnableAuto,
-}: {
-  busy: boolean;
-  onTaskCreated: (taskId: string) => void;
-  onEnableAuto: () => void;
-}) {
+}: DashboardActionsOptions) {
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [error, setError] = useState<string | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
+  const submittingRef = useRef(false);
+
   const mutation = useMutation({
     mutationFn: ({ action, body }: { action: ManualAction; body?: object }) =>
       api.action(action, body),
@@ -31,37 +35,46 @@ export function useDashboardActions({
       }
       setError(formatApiError(cause));
     },
-  });
-  const submit = useCallback(
-    (action: ManualAction, body?: object) => {
-      if (!busy) mutation.mutate({ action, body });
+    onSettled: () => {
+      submittingRef.current = false;
     },
-    [busy, mutation],
-  );
-  const rememberTrigger = () => {
+  });
+
+  const submit = (action: ManualAction, body?: object) => {
+    // ref 在同一次渲染的连续调用间立即生效，避免等待 isPending 更新时重复提交。
+    if (busy || mutation.isPending || submittingRef.current) return;
+    submittingRef.current = true;
+    mutation.mutate({ action, body });
+  };
+
+  const openConfirmation = (next: Confirmation) => {
+    setError(null);
     triggerRef.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
+    setConfirmation(next);
   };
+
   const close = useCallback(() => {
     setConfirmation(null);
+    // 等弹窗卸载、原按钮重新可聚焦后再恢复焦点。
     window.setTimeout(() => triggerRef.current?.focus());
   }, []);
+
   const request = (action: ManualAction, ip?: string) => {
-    setError(null);
+    // 检测和诊断直接执行；其余手动操作需要用户确认。
     if (action === 'health-check' || action === 'diagnose') {
+      setError(null);
       submit(action);
       return;
     }
-    rememberTrigger();
-    setConfirmation({ action, ip });
+    openConfirmation(action === 'apply' ? { action, ip } : { action });
   };
   const requestEnableAuto = () => {
-    setError(null);
-    rememberTrigger();
-    setConfirmation({ action: 'auto' });
+    openConfirmation({ action: 'auto' });
   };
+
   const confirm = () => {
     if (!confirmation) return;
     if (confirmation.action === 'auto') onEnableAuto();

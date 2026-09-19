@@ -100,6 +100,85 @@ describe('Dashboard 业务 Hooks', () => {
     expect(action).toHaveBeenCalledTimes(2);
   });
 
+  test('提交期间拦截连续操作，结束后允许再次提交', async () => {
+    let finishFirst!: (value: Awaited<ReturnType<typeof api.action>>) => void;
+    const first = new Promise<Awaited<ReturnType<typeof api.action>>>(
+      (resolve) => {
+        finishFirst = resolve;
+      },
+    );
+    const action = vi
+      .spyOn(api, 'action')
+      .mockReturnValueOnce(first)
+      .mockResolvedValue({
+        ok: true,
+        data: { taskId: task.id, status: 'queued' },
+      });
+    const { wrapper } = setup();
+    const { result } = renderHook(
+      () =>
+        useDashboardActions({
+          busy: false,
+          onTaskCreated: vi.fn(),
+          onEnableAuto: vi.fn(),
+        }),
+      { wrapper },
+    );
+
+    act(() => {
+      result.current.request('health-check');
+      result.current.request('health-check');
+    });
+    await waitFor(() => expect(action).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.submitting).toBe(true));
+    act(() => result.current.request('diagnose'));
+    expect(action).toHaveBeenCalledTimes(1);
+
+    finishFirst({ ok: true, data: { taskId: task.id, status: 'queued' } });
+    await waitFor(() => expect(result.current.submitting).toBe(false));
+    act(() => result.current.request('diagnose'));
+    await waitFor(() => expect(action).toHaveBeenCalledTimes(2));
+  });
+
+  test('确认与取消只执行对应操作', async () => {
+    const action = vi.spyOn(api, 'action').mockResolvedValue({
+      ok: true,
+      data: { taskId: task.id, status: 'queued' },
+    });
+    const onEnableAuto = vi.fn();
+    const { wrapper } = setup();
+    const { result } = renderHook(
+      () =>
+        useDashboardActions({
+          busy: false,
+          onTaskCreated: vi.fn(),
+          onEnableAuto,
+        }),
+      { wrapper },
+    );
+
+    act(() => result.current.request('apply', '1.2.3.4'));
+    expect(result.current.confirmation).toEqual({
+      action: 'apply',
+      ip: '1.2.3.4',
+    });
+    act(() => result.current.cancel());
+    expect(result.current.confirmation).toBeNull();
+    expect(action).not.toHaveBeenCalled();
+
+    act(() => result.current.request('reset'));
+    expect(result.current.confirmation).toEqual({ action: 'reset' });
+    act(() => result.current.confirm());
+    await waitFor(() => expect(action).toHaveBeenCalledWith('reset', {}));
+    await waitFor(() => expect(result.current.submitting).toBe(false));
+
+    act(() => result.current.requestEnableAuto());
+    expect(result.current.confirmation).toEqual({ action: 'auto' });
+    act(() => result.current.confirm());
+    expect(onEnableAuto).toHaveBeenCalledOnce();
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
   test('保存设置更新缓存并使监测状态失效', async () => {
     const response = { ok: true as const, data: { settings } };
     vi.spyOn(api, 'updateSettings').mockResolvedValue(response);
