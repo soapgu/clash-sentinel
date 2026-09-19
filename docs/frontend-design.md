@@ -1,9 +1,9 @@
 # Clash Sentinel 前端设计总览
 
-> 文档状态：已实现现状说明（Step 18）  
-> 适用版本：单机 MVP，2026-09-18 代码基线  
-> 目标读者：前端开发、测试、维护者和首次接手项目的工程师  
-> 实现结构演进：[Dashboard 重构设计](dashboard-refactor-design.md)  
+> 文档状态：当前实现说明（Step 19 后）
+> 适用版本：单机 MVP，2026-09-19 代码基线
+> 目标读者：前端开发、测试、维护者和首次接手项目的工程师
+> Dashboard 实现专题：[Dashboard 实现设计](dashboard-design.md)
 > 精确接口契约：[API 设计](api-design.md)
 
 ## 1. 定位与事实源
@@ -56,7 +56,29 @@ flowchart TB
   Components --> Assets[高保真本地品牌资源]
 ```
 
-`Dashboard.tsx` 已收敛为 145 行的页面编排入口。七类查询、SSE、任务、操作和设置分别由五个 Hook 管理，十二个展示组件负责功能区渲染，纯格式化与站点元数据独立维护；实现细节见 [Dashboard 重构设计](dashboard-refactor-design.md)。
+`Dashboard.tsx` 是 145 行的页面编排入口。七类查询、SSE、任务、操作和设置分别由五个 Hook 管理，十二个展示组件负责功能区渲染，纯格式化与站点元数据独立维护；实现细节见 [Dashboard 实现设计](dashboard-design.md)。
+
+### 3.1 数据通信的四层结构
+
+前端读写服务端数据时依次经过四层，每层只承担一种职责：
+
+1. React 页面与组件负责展示、表单草稿和用户事件，不直接发送请求。
+2. TanStack Query 的 Query、Mutation 与缓存负责异步状态、去重、失效和重新读取。
+3. `api.ts` 的 `requestJson()`、`readSnapshot()` 和 `writeJson()` 负责超时、响应解析、共享 Schema 校验和稳定错误转换。
+4. 浏览器原生 `fetch`、`AbortSignal` 和 `EventSource` 负责实际 HTTP 传输与 SSE 长连接。
+
+```mermaid
+flowchart LR
+  View[React 页面与组件] --> Hooks[业务 Hooks]
+  Hooks --> TQ[TanStack Query<br/>Query / Mutation / Cache]
+  TQ --> Client[api.ts<br/>requestJson / readSnapshot / writeJson]
+  Client --> HTTP[fetch + AbortSignal]
+  Hooks --> Stream[DashboardStream]
+  Stream --> SSE[EventSource]
+  SSE --> TQ
+```
+
+普通 GET、POST 和 PUT 请求统一通过 `requestJson()`，最终由 `fetch()` 发出，并由 `AbortSignal.timeout()` 控制超时。SSE 不经过 `requestJson()`：`DashboardStream` 使用 `EventSource` 持有长连接，只接收资源失效通知，再操作 Query 缓存。Query 用于读取和缓存快照；Mutation 用于提交写操作，成功后可以直接更新缓存或使相关 Query 失效。
 
 ## 4. 已实现功能
 
@@ -124,7 +146,38 @@ SSE 只发送资源失效通知，不承载完整快照。相同事件循环中�
 
 连接断开后使用 1、2、5、10、30 秒退避重连，同时每 15 秒刷新全部七类 Dashboard Query；标签页隐藏时暂停低频刷新。页面重新可见时刷新六类业务快照。恢复连接后停止降级定时器。
 
-### 5.2 异步任务跟踪
+### 5.2 后台任务完成后的 UI 更新
+
+写操作创建任务后，页面不把 Mutation 的响应当作最终业务结果。任务由服务端后台执行，状态变化通过 SSE 触发缓存失效，随后仍以普通 HTTP GET 重新读取权威快照：
+
+```mermaid
+sequenceDiagram
+  participant U as 用户
+  participant M as useMutation
+  participant API as api.ts / HTTP
+  participant T as 服务端任务引擎
+  participant E as EventSource
+  participant S as DashboardStream
+  participant Q as QueryClient
+  participant UI as React UI
+
+  U->>M: 发起操作
+  M->>API: POST /api/actions/:action
+  API->>T: 创建后台任务
+  API-->>M: 202 + taskId
+  M->>Q: 开始跟踪 taskId
+  T->>T: 执行并持久化状态
+  T-->>E: invalidate(task:id, status...)
+  E-->>S: 收到资源失效通知
+  S->>Q: invalidateQueries(受影响 Query)
+  Q->>API: GET 权威快照
+  API-->>Q: Schema 校验后的最新数据
+  Q-->>UI: 缓存变化触发重新渲染
+```
+
+SSE 的职责是通知“哪些数据可能变了”，不传递完整业务快照；HTTP GET 才是重新读取权威状态的路径。这样断线重连、轮询降级和手动刷新都能复用同一套 Query 与 Schema 校验逻辑。
+
+### 5.3 异步任务跟踪
 
 ```mermaid
 sequenceDiagram
@@ -153,7 +206,7 @@ sequenceDiagram
 
 失败结果区分无需恢复、已经恢复、恢复失败和结果未知；配置类任务无法确认恢复时必须提示人工检查。
 
-### 5.3 设置与操作流程
+### 5.4 设置与操作流程
 
 ```mermaid
 flowchart TD
@@ -197,7 +250,7 @@ flowchart TD
 - 设置抽屉支持 Escape 和点击遮罩关闭，关闭后恢复设置按钮焦点。
 - 图标和装饰标记使用 `aria-hidden`；图标按钮必须有文本化 `aria-label`。
 - `prefers-reduced-motion: reduce` 时关闭过渡和滚动动画。
-- Step 19 拆分不得改变现有文案、DOM 语义、键盘路径、焦点返回和响应式结果。
+- 修改组件或样式时，必须同步验证现有文案、DOM 语义、键盘路径、焦点返回和响应式结果。
 
 ## 8. 安全与隐私边界
 
@@ -214,7 +267,7 @@ flowchart TD
 - Dashboard 已完成模块化拆分；后续新增功能必须继续遵守页面、Hook、组件和基础设施的单向依赖。
 - Vitest 已覆盖 API、候选时效、Query、SSE、核心展示组件和 Hook 协作，但完整视觉差异仍依赖 Playwright 与人工复核。
 - SSE 断线提示和降级轮询可用，但浏览器没有跨标签页任务协调。
-- Step 19 只做结构性重构和补充测试，不改变产品功能、接口或视觉。
+- 当前模块边界不承诺永远不变，但职责调整必须保持依赖方向清晰，并同步更新 Dashboard 专题。
 
 ## 10. 测试策略与追踪
 

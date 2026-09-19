@@ -2,7 +2,7 @@
 
 本目录是 Step 7 的独立静态原型，用于冻结正式 React 看板的视觉、信息层级和交互行为。原型不连接 API，不读取 SQLite，不执行网络检测或 Shell 命令；所有内容均为内存中的虚构示例，刷新页面会恢复默认状态。
 
-当前前端架构和运行行为见[前端设计总览](../../frontend-design.md)，后续结构拆分见[Dashboard 重构设计](../../dashboard-refactor-design.md)。本原型及固定截图是视觉与交互基准，运行代码、共享 Schema 和 API 专题才是实际行为与接口事实源。
+当前前端架构和运行行为见[前端设计总览](../../frontend-design.md)，当前 Dashboard 实现结构见[Dashboard 实现设计](../../dashboard-design.md)。本原型及固定截图是视觉与交互基准，运行代码、共享 Schema 和 API 专题才是实际行为与接口事实源。
 
 ## 预览
 
