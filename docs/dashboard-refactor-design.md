@@ -1,13 +1,13 @@
 # Dashboard 重构设计
 
-> 文档状态：**待 Step 19 实现**  
-> 适用范围：`apps/web/src/Dashboard.tsx` 与 `apps/web/src/style.css` 的结构性重构  
+> 文档状态：**已实现（Step 19）**
+> 适用范围：`apps/web/src/dashboard` 的页面、Hooks、组件与样式模块
 > 现状与行为基线：[前端设计总览](frontend-design.md)  
 > 视觉基线：[高保真可交互原型](design/high-fidelity/README.md)
 
 ## 1. 目标与非目标
 
-当前 `Dashboard.tsx` 约 1,375 行，既渲染全部功能区，又持有七类查询、三类 Mutation、SSE 生命周期、任务恢复、确认与焦点状态。`style.css` 约 925 行，基础样式、功能区、浮层和响应式规则集中维护。
+重构前的 `Dashboard.tsx` 约 1,375 行，同时承担功能区渲染、七类查询、三类 Mutation、SSE 生命周期、任务恢复、确认与焦点状态；单体 `style.css` 约 925 行。Step 19 已按本文方案完成拆分，当前页面入口为 145 行，最大组件 236 行，最大 Hook 85 行。
 
 Step 19 的目标是按“页面编排、业务 Hook、展示组件、纯函数、样式模块”彻底拆分，使每个文件只有一个清晰变化原因，并为状态流程增加 DOM 与 Hook 测试。
 
@@ -20,7 +20,7 @@ Step 19 的目标是按“页面编排、业务 Hook、展示组件、纯函数�
 
 ## 2. 目标结构与依赖方向
 
-以下结构全部**待 Step 19 实现**：
+当前实现结构：
 
 ```text
 apps/web/src/
@@ -127,7 +127,7 @@ const settings = useDashboardSettings();
 
 ## 4. Hooks 设计
 
-以下 Hooks 全部**待 Step 19 实现**。
+以下 Hooks 均已实现。
 
 ### 4.1 `useDashboardData`
 
@@ -227,13 +227,13 @@ CSS 迁移时先保持原选择器不变，按原出现顺序移入：
 5. 将 `Dashboard.tsx` 收敛为编排入口，更新 `main.tsx` 导入。
 6. 按固定导入顺序拆分 CSS，执行桌面与窄屏视觉比对。
 7. 删除旧 `apps/web/src/Dashboard.tsx`、`style.css` 中已迁移内容；确认没有双份实现。
-8. 更新[前端设计总览](frontend-design.md)的实现路径和限制，并删除本文所有“待 Step 19 实现”标记。
+8. 更新[前端设计总览](frontend-design.md)的实现路径和限制。
 
 每一步都应保持可构建、可测试，避免一次性搬迁全部状态后再修复。
 
 ## 7. 测试与验收
 
-Step 19 增加 `@testing-library/react`、`@testing-library/user-event`、`@testing-library/jest-dom` 和 `jsdom`。DOM 测试使用单独的 jsdom 测试环境，现有 API、Query、SSE 和候选时效测试继续运行在当前环境。
+Step 19 已增加 `@testing-library/react`、`@testing-library/user-event`、`@testing-library/jest-dom` 和 `jsdom`。DOM 测试通过文件级声明使用 jsdom，现有 API、Query、SSE 和候选时效测试继续运行在 Node 环境。
 
 必须覆盖：
 
@@ -254,4 +254,3 @@ Step 19 增加 `@testing-library/react`、`@testing-library/user-event`、`@test
 - 1440px、390px 视觉与原型基准一致，并在 900px、620px 断点两侧无布局回归；
 - 键盘、焦点、ARIA、确认文案和错误 Request ID 展示不变；
 - `npm run format:check`、`npm run lint`、`npm run typecheck`、`npm test`、`npm run build`、`npm run test:e2e` 和 `git diff --check` 全部通过。
-

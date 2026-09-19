@@ -17,8 +17,8 @@
 | 请求超时和错误转换 | `apps/web/src/api.ts` |
 | Query Key、缓存刷新和任务轮询 | `apps/web/src/queries.ts` |
 | SSE 重连、失效通知和降级同步 | `apps/web/src/stream.ts` |
-| 当前页面行为和可访问性 | `apps/web/src/Dashboard.tsx` |
-| 当前样式和响应式断点 | `apps/web/src/style.css` |
+| 当前页面行为和可访问性 | `apps/web/src/dashboard` 下的页面、Hooks 与组件 |
+| 当前样式和响应式断点 | `apps/web/src/dashboard/styles` |
 | 视觉与交互基准 | `docs/design/high-fidelity/README.md` 及其截图 |
 
 修改上述事实源时，必须在同一变更中更新本文或对应专题。本文维护协作关系和约束；精确契约只在其事实源维护。
@@ -41,20 +41,22 @@
 
 ```mermaid
 flowchart TB
-  Main[main.tsx<br/>Provider 与路由] --> Dashboard[Dashboard.tsx<br/>页面、状态与业务编排]
-  Dashboard --> Query[queries.ts<br/>查询与缓存策略]
-  Dashboard --> API[api.ts<br/>类型化 HTTP 客户端]
-  Dashboard --> Stream[stream.ts<br/>SSE 与降级同步]
-  Dashboard --> Fresh[freshness.ts<br/>候选时效判断]
+  Main[main.tsx<br/>Provider 与路由] --> Dashboard[dashboard/Dashboard.tsx<br/>页面编排]
+  Dashboard --> Hooks[dashboard/hooks<br/>数据与业务流程]
+  Dashboard --> Components[dashboard/components<br/>展示与交互]
+  Hooks --> Query[queries.ts<br/>查询与缓存策略]
+  Hooks --> API[api.ts<br/>类型化 HTTP 客户端]
+  Hooks --> Stream[stream.ts<br/>SSE 与降级同步]
+  Components --> Fresh[freshness.ts<br/>候选时效判断]
   Query --> API
   Stream --> Query
   API --> Shared[共享 Zod Schema]
   Stream --> Shared
-  Dashboard --> CSS[style.css]
-  Dashboard --> Assets[高保真本地品牌资源]
+  Dashboard --> CSS[dashboard/styles<br/>分层样式]
+  Components --> Assets[高保真本地品牌资源]
 ```
 
-`Dashboard.tsx` 当前约 1,375 行，同时包含页面编排、查询、Mutation、任务恢复、对话框、设置表单和所有功能组件。当前行为完整，但职责耦合过多；目标拆分见 [Dashboard 重构设计](dashboard-refactor-design.md)。
+`Dashboard.tsx` 已收敛为 145 行的页面编排入口。七类查询、SSE、任务、操作和设置分别由五个 Hook 管理，十二个展示组件负责功能区渲染，纯格式化与站点元数据独立维护；实现细节见 [Dashboard 重构设计](dashboard-refactor-design.md)。
 
 ## 4. 已实现功能
 
@@ -209,8 +211,8 @@ flowchart TD
 ## 9. 已知限制与演进
 
 - 当前只有一个 Dashboard 路由，React Router 尚未承担多页面导航。
-- `Dashboard.tsx` 和 `style.css` 体积过大，组件、业务状态与基础设施生命周期耦合。
-- 现有 Vitest 覆盖 API、候选时效、Query 策略和 SSE，但没有 DOM 级组件与 Hook 测试。
+- Dashboard 已完成模块化拆分；后续新增功能必须继续遵守页面、Hook、组件和基础设施的单向依赖。
+- Vitest 已覆盖 API、候选时效、Query、SSE、核心展示组件和 Hook 协作，但完整视觉差异仍依赖 Playwright 与人工复核。
 - SSE 断线提示和降级轮询可用，但浏览器没有跨标签页任务协调。
 - Step 19 只做结构性重构和补充测试，不改变产品功能、接口或视觉。
 
@@ -221,11 +223,10 @@ flowchart TD
 | 响应必须类型安全 | 4.2、8 | `api.ts`、共享 Schema | `api.test.ts` |
 | 读取刷新无业务副作用 | 4.2 | `queries.ts` | `queries.test.ts`、Playwright smoke |
 | SSE 精确失效与重连 | 5.1 | `stream.ts` | `stream.test.ts` |
-| 候选过期不可应用 | 6 | `freshness.ts`、`Dashboard.tsx` | `freshness.test.ts`、Step 19 组件测试 |
-| 任务恢复与轮询降级 | 5.2 | `Dashboard.tsx`、`queries.ts` | `queries.test.ts`、Step 19 Hook 测试 |
-| 危险操作必须确认 | 4.3、5.3 | `Dashboard.tsx` | Playwright smoke、Step 19 组件测试 |
-| 错误、恢复状态可辨识 | 6 | `Dashboard.tsx` | Playwright smoke、Step 19 组件测试 |
-| 响应式与键盘可用 | 7 | `style.css`、`Dashboard.tsx` | 高保真原型测试、Step 19 Playwright |
+| 候选过期不可应用 | 6 | `freshness.ts`、`CandidatePanel.tsx` | 候选时效与组件测试 |
+| 任务恢复与轮询降级 | 5.2 | `useTrackedTask.ts`、`queries.ts` | Query 与 Hook 测试 |
+| 危险操作必须确认 | 4.3、5.3 | `useDashboardActions.ts`、`ConfirmDialog.tsx` | 组件测试、Playwright smoke |
+| 错误、恢复状态可辨识 | 6 | `FeedbackBanners.tsx`、`TaskPanel.tsx` | 组件测试、Playwright smoke |
+| 响应式与键盘可用 | 7 | `dashboard/styles`、交互组件 | 组件测试、高保真与生产 Playwright |
 
 任何前端行为变更至少执行 `npm run format:check`、`npm run lint`、`npm run typecheck`、`npm test` 和 `npm run build`；交互或样式变更还应执行 `npm run test:e2e` 并在 1440px、390px、900px 和 620px 复核。
-

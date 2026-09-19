@@ -4,7 +4,7 @@ export default defineConfig({
     include: [
       'packages/**/*.test.ts',
       'apps/server/**/*.test.ts',
-      'apps/web/**/*.test.ts',
+      'apps/web/**/*.test.{ts,tsx}',
     ],
     setupFiles: ['apps/server/test-support/vitest-setup.ts'],
   },

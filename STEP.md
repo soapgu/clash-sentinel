@@ -833,7 +833,7 @@ Mermaid 代码围栏检查通过。Prettier、ESLint、TypeScript 类型检查�
 
 **前置依赖**：Step 18。
 
-**状态**：待实现。
+**状态**：已完成。
 
 **任务**：
 
@@ -851,13 +851,15 @@ Mermaid 代码围栏检查通过。Prettier、ESLint、TypeScript 类型检查�
 
 **验收条件**：
 
-- [ ] `Dashboard.tsx` 只负责组合且不超过 250 行；单组件不超过 300 行，单 Hook 不超过 250 行。
-- [ ] 展示组件不直接调用 API、`QueryClient`、`sessionStorage` 或 `DashboardStream`。
-- [ ] 不存在万能 Dashboard Hook、巨型 Props 对象或新旧双份实现。
-- [ ] API、Query Key、SSE、任务轮询、确认文案、焦点、ARIA、900px/620px 断点和视觉结果保持不变。
-- [ ] 设置、危险操作、任务恢复、冲突接管、SSE 降级、错误和过期状态具有组件或 Hook 测试。
-- [ ] 1440px、390px 及断点两侧通过视觉和交互复核。
-- [ ] 格式、lint、类型检查、单元测试、生产构建、Playwright 和 `git diff --check` 全部通过。
+- [x] `Dashboard.tsx` 只负责组合且为 145 行；最大组件 236 行，最大 Hook 85 行。
+- [x] 展示组件不直接调用 API、`QueryClient`、`sessionStorage` 或 `DashboardStream`。
+- [x] 不存在万能 Dashboard Hook、巨型 Props 对象或新旧双份实现。
+- [x] API、Query Key、SSE、任务轮询、确认文案、焦点、ARIA、900px/620px 断点和视觉结果保持不变。
+- [x] 设置、危险操作、任务恢复、冲突接管、SSE 降级、错误和过期状态具有组件或 Hook 测试。
+- [x] 1440px、390px 及断点两侧通过视觉和交互复核。
+- [x] 格式、lint、类型检查、单元测试、生产构建、Playwright 和 `git diff --check` 全部通过。
+
+本地验证（2026-09-19）：单体页面拆为 5 个业务 Hook、12 个展示组件、3 个纯模块及 7 个样式入口/分层文件；新增 Testing Library、jest-dom 与 jsdom 测试环境。39 个测试文件中的 191 个 Vitest/Supertest 测试、17 个 Playwright 测试、Prettier、ESLint、TypeScript 类型检查、生产构建及 `git diff --check` 全部通过。生产 Playwright 同时覆盖桌面与 390px 窄屏无横向溢出、SSE 降级恢复、设置和危险操作焦点路径；900px/620px 断点规则保持原值和原层叠顺序。
 
 
 ### Step 20：终端运行与 MVP 验收
