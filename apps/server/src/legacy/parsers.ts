@@ -250,6 +250,7 @@ export function parseStatusOutput(output: string): LegacyStatus {
       ? { locked: true, domain: lock[1], ip: lock[2] }
       : { locked: false },
     controllerAvailable: /^Mihomo控制接口：可用/m.test(output),
+    controllerAuthFailed: /^Mihomo控制接口：认证失败/m.test(output),
     report: report
       ? {
           status: report[1],

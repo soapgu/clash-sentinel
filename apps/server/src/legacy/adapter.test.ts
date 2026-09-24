@@ -150,13 +150,17 @@ printf '%s' "$code"
     '#!/usr/bin/env bash\nexit 0\n',
   );
 
-  const adapter = (environment: NodeJS.ProcessEnv = {}) =>
+  const adapter = (
+    environment: NodeJS.ProcessEnv = {},
+    controllerSecret?: string,
+  ) =>
     new LegacyAdapter({
       scriptPath: legacyScript,
       appDir,
       stateDir,
       reportDir,
       backupDir,
+      controllerSecret,
       environment: {
         PATH: `${binDir}:${process.env.PATH ?? ''}`,
         CLASH_ENTRY_SAMPLE_PORTS: '2',
@@ -166,7 +170,7 @@ printf '%s' "$code"
         ...environment,
       },
     });
-  return { root, appDir, stateDir, raw, adapter };
+  return { root, appDir, binDir, stateDir, raw, adapter };
 }
 
 async function expectCode(promise: Promise<unknown>, code: string) {
@@ -181,6 +185,46 @@ async function expectCode(promise: Promise<unknown>, code: string) {
 }
 
 describe('LegacyAdapter', () => {
+  test('默认密钥认证 TCP 控制接口，并区分 401/403 与连接失败', async () => {
+    const setup = await fixture();
+    await writeFile(
+      join(setup.appDir, 'clash-verge.yaml'),
+      'mixed-port: 7897\nexternal-controller: 127.0.0.1:9097\nexternal-controller-unix: /tmp/missing.sock\n',
+    );
+    await executable(
+      join(setup.binDir, 'curl'),
+      `#!/usr/bin/env bash
+[[ " $* " == *'--unix-socket'* ]]&&exit 7
+[[ " $* " == *'/version'* ]]||{ printf '{}';exit 0; }
+[[ " $* " == *'Authorization: Bearer set-your-secret'* ]]||{ printf '401';exit 0; }
+printf '%s' "\${CLASH_TEST_HTTP_STATUS:-200}"
+`,
+    );
+    await expect(setup.adapter().getStatus()).resolves.toMatchObject({
+      controllerAvailable: true,
+      controllerAuthFailed: false,
+    });
+    for (const code of ['401', '403']) {
+      await expect(
+        setup.adapter({ CLASH_TEST_HTTP_STATUS: code }).getStatus(),
+      ).resolves.toMatchObject({
+        controllerAvailable: false,
+        controllerAuthFailed: true,
+      });
+    }
+    await expect(
+      setup.adapter({ CLASH_TEST_HTTP_STATUS: '503' }).getStatus(),
+    ).resolves.toMatchObject({
+      controllerAvailable: false,
+      controllerAuthFailed: false,
+    });
+    await expect(
+      setup.adapter({}, 'wrong-secret').getStatus(),
+    ).resolves.toMatchObject({
+      controllerAvailable: false,
+      controllerAuthFailed: true,
+    });
+  });
   test('诊断、应用、状态、健康、重置和回滚形成完整闭环', async () => {
     const setup = await fixture();
     const adapter = setup.adapter();

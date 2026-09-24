@@ -46,6 +46,11 @@ export function EntryCard({
                 : '尚无健康数据'}
           </span>
         </div>
+        {snapshot?.statusDetail === 'controller_auth_failed' ? (
+          <p role="alert" className="form-error">
+            控制接口认证失败，请检查 Sentinel 密钥与 Clash Verge Rev 是否一致。
+          </p>
+        ) : null}
         <div className="entry-details">
           <div>
             <span>入口域名</span>

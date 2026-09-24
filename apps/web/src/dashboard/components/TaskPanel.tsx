@@ -47,6 +47,12 @@ export function TaskPanel({
         .find((value) => typeof value === 'string')
         ?.toString()
     : null;
+  const authFailed =
+    task?.type === 'health_check' &&
+    task.result &&
+    typeof task.result === 'object' &&
+    'statusDetail' in task.result &&
+    task.result.statusDetail === 'controller_auth_failed';
   return (
     <section
       className={`task-panel panel ${needsAttention ? 'danger' : task?.status === 'succeeded' ? 'success' : ''}`}
@@ -101,6 +107,11 @@ export function TaskPanel({
       ) : null}
       {resultSummary ? (
         <p className="task-message">结果：{resultSummary}</p>
+      ) : null}
+      {authFailed ? (
+        <p role="alert" className="form-error">
+          控制接口认证失败，请检查 Sentinel 密钥与 Clash Verge Rev 是否一致。
+        </p>
       ) : null}
       {task?.recoveryStatus === 'recovered' ? (
         <p className="task-recovery">原文件与运行配置已恢复。</p>

@@ -54,6 +54,12 @@ Legacy 适配层使用参数数组启动脚本，不经过 Shell 拼接；为不
 `false` 会在对应范围完整保留凭据、URL 和本机路径，存在明确的敏感信息泄露风险。
 正常运行请保持两个脱敏开关为 `true`。不要提交 `.env`、真实配置、数据库、报告或备份；操作可能重载 Mihomo 并短暂影响代理连接，首次启用自动切换前应确认受管订阅和候选 IP。
 
+Mihomo TCP 控制接口使用 `controller.secret` 认证；未配置时默认使用
+`set-your-secret`。若 Clash Verge Rev 使用其他密钥，可复制 `config/default.yaml`
+到不纳入 Git 的本机文件，添加 `controller: { secret: "实际密钥" }`，再通过
+`CLASH_SENTINEL_CONFIG` 指向该文件并重启 Sentinel。控制接口返回 401/403 时，
+页面会显示认证失败提示；请勿将含实际密钥的配置文件提交到仓库。
+
 本地存储使用同步、事务化的 SQLite，默认数据库位于仓库根目录的
 `.state/clash-sentinel.db`，不受 npm workspace 当前目录影响。可以通过
 `CLASH_SENTINEL_DB_PATH` 环境变量或

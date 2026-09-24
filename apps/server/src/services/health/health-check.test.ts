@@ -233,6 +233,31 @@ test('入口健康时将控制接口或全代理故障表达为 proxy_error', as
   expect(proxyDown.legacy.healthCheck).toHaveBeenCalledOnce();
 });
 
+test('认证失败详情持久化，并在恢复后清除', async () => {
+  const value = await setup(
+    {},
+    {
+      controllerAvailable: false,
+      controllerAuthFailed: true,
+    },
+  );
+  expect((await value.service.run('manual')).snapshot.statusDetail).toBe(
+    'controller_auth_failed',
+  );
+  expect(value.store.health.getHealthSnapshot()?.statusDetail).toBe(
+    'controller_auth_failed',
+  );
+  value.legacy.getStatus.mockResolvedValue({
+    profile: { uid: 'profile-demo', name: '演示订阅' },
+    lock: { locked: true, domain: 'entry.example.test', ip: '198.51.100.20' },
+    controllerAvailable: true,
+    controllerAuthFailed: false,
+    report: null,
+    health: null,
+  });
+  expect((await value.service.run('manual')).snapshot.statusDetail).toBeNull();
+});
+
 test('入口异常优先于单个海外失败且海外结果不改变失败计数', async () => {
   const value = await setup({ google: result('google', false, 'timeout') });
   value.legacy.healthCheck.mockResolvedValue({

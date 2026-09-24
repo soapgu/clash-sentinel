@@ -46,6 +46,7 @@ export type HealthStatus = z.infer<typeof healthStatusSchema>;
 export const healthSnapshotSchema = z
   .object({
     status: healthStatusSchema,
+    statusDetail: z.enum(['controller_auth_failed']).nullable().optional(),
     profile: z.object({ uid: z.string().min(1), name: z.string() }).nullable(),
     lock: z.discriminatedUnion('locked', [
       z.object({ locked: z.literal(false) }),

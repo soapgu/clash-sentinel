@@ -253,6 +253,10 @@ export class HealthCheckService {
     }
 
     snapshot.status = this.finalStatus(snapshot, status, proxyResults);
+    snapshot.statusDetail =
+      snapshot.status === 'proxy_error' && status?.controllerAuthFailed
+        ? 'controller_auth_failed'
+        : null;
     let saved = this.health.upsertHealthSnapshot(snapshot);
     changes.statusUpdated = true;
     if (snapshot.status === 'entry_down' && previous?.status !== 'entry_down') {

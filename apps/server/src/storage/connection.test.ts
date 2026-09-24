@@ -17,6 +17,7 @@ describe('SQLite 迁移', () => {
     expect(rows).toEqual([
       { version: 1, name: 'initial_schema' },
       { version: 2, name: 'task_recovery_status' },
+      { version: 3, name: 'health_status_detail' },
     ]);
     database.close();
   });
@@ -24,7 +25,7 @@ describe('SQLite 迁移', () => {
   test('故障迁移回滚其全部结构和版本记录', () => {
     const database = new Database(':memory:');
     const failing: Migration = {
-      version: 3,
+      version: 4,
       name: 'failing_test',
       up(db) {
         db.exec('CREATE TABLE must_rollback (id INTEGER PRIMARY KEY)');
@@ -43,7 +44,7 @@ describe('SQLite 迁移', () => {
       database
         .prepare('SELECT version FROM schema_migrations ORDER BY version')
         .all(),
-    ).toEqual([{ version: 1 }, { version: 2 }]);
+    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
     database.close();
   });
 

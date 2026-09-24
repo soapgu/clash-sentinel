@@ -9,6 +9,7 @@ import type {
   StoredTask,
 } from '@clash-sentinel/shared';
 import { ConfirmDialog } from './ConfirmDialog.js';
+import { EntryCard } from './EntryCard.js';
 import { FeedbackBanners } from './FeedbackBanners.js';
 import { SettingsDrawer } from './SettingsDrawer.js';
 import { TaskPanel } from './TaskPanel.js';
@@ -53,6 +54,39 @@ const failedTask: StoredTask = {
 afterEach(cleanup);
 
 describe('Dashboard 展示组件', () => {
+  test('入口和手动任务显示控制接口认证失败原因', () => {
+    const failedSnapshot: HealthSnapshot = {
+      ...snapshot,
+      status: 'proxy_error',
+      statusDetail: 'controller_auth_failed',
+    };
+    render(
+      <>
+        <EntryCard
+          snapshot={failedSnapshot}
+          settings={settings}
+          offline={false}
+          busy={false}
+          onAction={vi.fn()}
+        />
+        <TaskPanel
+          task={{
+            ...failedTask,
+            type: 'health_check',
+            status: 'succeeded',
+            result: failedSnapshot,
+            errorCode: null,
+            errorMessage: null,
+          }}
+          loading={false}
+          error={null}
+          onClose={vi.fn()}
+        />
+      </>,
+    );
+    expect(screen.getAllByRole('alert')).toHaveLength(2);
+    expect(screen.getAllByText(/控制接口认证失败/)).toHaveLength(2);
+  });
   test('设置抽屉转换单位、校验并提交完整设置', async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();

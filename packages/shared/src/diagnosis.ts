@@ -58,6 +58,7 @@ export const legacyStatusSchema = z.object({
     }),
   ]),
   controllerAvailable: z.boolean(),
+  controllerAuthFailed: z.boolean().optional(),
   report: z
     .object({
       status: z.enum(['testable', 'skipped']),

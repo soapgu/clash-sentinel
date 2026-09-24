@@ -84,7 +84,10 @@ describe('领域仓储', () => {
 
     const reopened = new SqliteStore({ databasePath: setup.databasePath });
     reopened.tasks.recoverInterruptedTasks();
-    expect(reopened.health.getHealthSnapshot()).toEqual(healthSnapshot(now));
+    expect(reopened.health.getHealthSnapshot()).toEqual({
+      ...healthSnapshot(now),
+      statusDetail: null,
+    });
     expect(reopened.sites.getSiteSnapshot('google')).toEqual(
       siteResult('google', now),
     );

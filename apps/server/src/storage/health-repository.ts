@@ -23,6 +23,7 @@ export class HealthRepository {
     if (!row) return null;
     return healthSnapshotSchema.parse({
       status: row.status,
+      statusDetail: row.status_detail ?? null,
       profile: row.profile_uid
         ? { uid: row.profile_uid, name: row.profile_name ?? '' }
         : null,
@@ -55,8 +56,8 @@ export class HealthRepository {
         INSERT INTO health_snapshot (
           singleton_id, status, profile_uid, profile_name, locked, entry_domain, current_ip,
           internet_success, internet_total, consecutive_failures, recommended_ip,
-          auto_switch_cooldown_until, updated_at
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          auto_switch_cooldown_until, updated_at, status_detail
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(singleton_id) DO UPDATE SET
           status = excluded.status, profile_uid = excluded.profile_uid,
           profile_name = excluded.profile_name, locked = excluded.locked,
@@ -65,7 +66,7 @@ export class HealthRepository {
           consecutive_failures = excluded.consecutive_failures,
           recommended_ip = excluded.recommended_ip,
           auto_switch_cooldown_until = excluded.auto_switch_cooldown_until,
-          updated_at = excluded.updated_at
+          updated_at = excluded.updated_at, status_detail = excluded.status_detail
       `,
       )
       .run(
@@ -83,6 +84,7 @@ export class HealthRepository {
           ? toEpoch(value.autoSwitchCooldownUntil)
           : null,
         toEpoch(value.updatedAt),
+        value.statusDetail ?? null,
       );
     return this.getHealthSnapshot()!;
   }

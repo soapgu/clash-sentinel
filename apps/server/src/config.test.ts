@@ -77,4 +77,11 @@ describe('服务端启动配置', () => {
   test('配置文件不存在时抛出读取错误', () => {
     expect(() => loadServerConfig({}, '/definitely/missing/project')).toThrow();
   });
+
+  test('可在本机配置中覆盖控制接口密钥', async () => {
+    const setup = await fixture(`${valid}controller:\n  secret: local-value\n`);
+    expect(loadServerConfig({}, setup.root).controller?.secret).toBe(
+      'local-value',
+    );
+  });
 });

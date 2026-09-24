@@ -74,6 +74,7 @@ function registerServices(
           reportDir: paths.legacyReportDir,
           backupDir: paths.legacyBackupDir,
           environment,
+          controllerSecret: config.controller?.secret ?? 'set-your-secret',
           logger,
         }),
     ),

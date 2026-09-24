@@ -9,6 +9,10 @@ export const serverConfigSchema = z
   .object({
     logging: z.object({ redactSensitiveData: z.boolean() }).strict(),
     storage: z.object({ redactSensitiveData: z.boolean() }).strict(),
+    controller: z
+      .object({ secret: z.string().min(1) })
+      .strict()
+      .optional(),
   })
   .strict();
 

@@ -150,9 +150,19 @@ const taskRecoveryStatus: Migration = {
   },
 };
 
+const healthStatusDetail: Migration = {
+  version: 3,
+  name: 'health_status_detail',
+  up(database) {
+    database.exec(`ALTER TABLE health_snapshot ADD COLUMN status_detail TEXT
+      CHECK (status_detail IN ('controller_auth_failed'));`);
+  },
+};
+
 export const migrations: readonly Migration[] = [
   initialSchema,
   taskRecoveryStatus,
+  healthStatusDetail,
 ];
 
 /**

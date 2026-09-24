@@ -37,6 +37,8 @@ export interface LegacyAdapterOptions {
   backupDir: string;
   /** 传递给子进程的附加环境变量；固定目录变量仍由适配器覆盖。 */
   environment?: NodeJS.ProcessEnv;
+  /** Mihomo TCP 控制接口密钥；不写入任务和日志。 */
+  controllerSecret?: string;
   /** 按命令覆盖默认超时时间，单位为毫秒。 */
   timeouts?: Partial<Record<LegacyCommand, number>>;
   /** 发送 SIGTERM 后等待 SIGKILL 的宽限时间，单位为毫秒。 */
@@ -265,6 +267,8 @@ export class LegacyAdapter {
       CLASH_ENTRY_STATE_DIR: this.options.stateDir,
       CLASH_ENTRY_REPORT_DIR: this.options.reportDir,
       CLASH_ENTRY_BACKUP_DIR: this.options.backupDir,
+      CLASH_SENTINEL_CONTROLLER_SECRET:
+        this.options.controllerSecret ?? 'set-your-secret',
       ...environmentOverrides,
     };
 
@@ -452,6 +456,7 @@ export class LegacyAdapter {
     if (/报告已过期/.test(output)) return 'REPORT_EXPIRED';
     if (/当前订阅已切换/.test(output)) return 'PROFILE_CHANGED';
     if (/当前订阅已更新/.test(output)) return 'SUBSCRIPTION_UPDATED';
+    if (/控制接口认证失败/.test(output)) return 'CONTROLLER_UNAVAILABLE';
     if (/未通过最近一次严格检测|非法 IPv4/.test(output))
       return 'INVALID_CANDIDATE';
     if (/控制接口不可连接/.test(output)) return 'CONTROLLER_UNAVAILABLE';
