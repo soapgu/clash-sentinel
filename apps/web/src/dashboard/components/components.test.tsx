@@ -54,6 +54,78 @@ const failedTask: StoredTask = {
 afterEach(cleanup);
 
 describe('Dashboard 展示组件', () => {
+  test.each<{
+    name: string;
+    changes?: Partial<StoredTask>;
+    expected: string;
+  }>([
+    { name: '无任务', expected: '正在读取任务' },
+    {
+      name: '等待执行',
+      changes: { status: 'queued', recoveryStatus: null },
+      expected: '任务等待执行',
+    },
+    {
+      name: '执行中',
+      changes: { status: 'running', recoveryStatus: null },
+      expected: '任务执行中',
+    },
+    {
+      name: '成功',
+      changes: { status: 'succeeded', recoveryStatus: null },
+      expected: '任务已完成',
+    },
+    {
+      name: '失败',
+      changes: { status: 'failed', recoveryStatus: null },
+      expected: '任务失败',
+    },
+    {
+      name: '中断',
+      changes: { status: 'interrupted', recoveryStatus: null },
+      expected: '任务已中断',
+    },
+    {
+      name: '失败但已恢复',
+      changes: { status: 'failed', recoveryStatus: 'recovered' },
+      expected: '失败但已恢复',
+    },
+    {
+      name: '需人工处理',
+      changes: { status: 'failed', recoveryStatus: 'recovery_failed' },
+      expected: '需人工处理',
+    },
+    {
+      name: '成功优先于恢复异常',
+      changes: { status: 'succeeded', recoveryStatus: 'recovery_failed' },
+      expected: '任务已完成',
+    },
+    {
+      name: '配置任务恢复未知需人工处理',
+      changes: { status: 'interrupted', recoveryStatus: 'unknown' },
+      expected: '需人工处理',
+    },
+    {
+      name: '普通任务恢复未知仍显示状态',
+      changes: {
+        type: 'health_check',
+        status: 'interrupted',
+        recoveryStatus: 'unknown',
+      },
+      expected: '任务已中断',
+    },
+  ])('任务标题：$name', ({ changes, expected }) => {
+    render(
+      <TaskPanel
+        task={changes ? { ...failedTask, ...changes } : undefined}
+        loading={!changes}
+        error={null}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('heading', { name: expected })).toBeInTheDocument();
+  });
+
   test('入口和手动任务显示控制接口认证失败原因', () => {
     const failedSnapshot: HealthSnapshot = {
       ...snapshot,

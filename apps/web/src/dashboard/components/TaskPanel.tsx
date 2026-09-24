@@ -6,6 +6,24 @@ import {
   taskStatusLabels,
 } from '../formatters.js';
 
+const taskTitles: Record<StoredTask['status'], string> = {
+  queued: '任务等待执行',
+  running: '任务执行中',
+  succeeded: '任务已完成',
+  failed: '任务失败',
+  interrupted: '任务已中断',
+};
+
+function getTaskTitle(task: StoredTask | undefined, needsAttention: boolean) {
+  if (!task) return '正在读取任务';
+  if (task.status === 'succeeded') return taskTitles.succeeded;
+  if (task.status === 'failed' && task.recoveryStatus === 'recovered') {
+    return '失败但已恢复';
+  }
+  if (needsAttention) return '需人工处理';
+  return taskTitles[task.status];
+}
+
 export function TaskPanel({
   task,
   loading,
@@ -27,21 +45,7 @@ export function TaskPanel({
     task?.recoveryStatus === 'recovery_failed' ||
     (task?.recoveryStatus === 'unknown' &&
       ['apply', 'reset', 'rollback', 'auto_switch'].includes(task.type));
-  const title = !task
-    ? '正在读取任务'
-    : task.status === 'succeeded'
-      ? '任务已完成'
-      : task.status === 'failed' && task.recoveryStatus === 'recovered'
-        ? '失败但已恢复'
-        : needsAttention
-          ? '需人工处理'
-          : task.status === 'interrupted'
-            ? '任务已中断'
-            : task.status === 'failed'
-              ? '任务失败'
-              : task.status === 'running'
-                ? '任务执行中'
-                : '任务等待执行';
+  const title = getTaskTitle(task, needsAttention);
   const resultSummary = task?.result
     ? [task.result.message, task.result.status, task.result.recommendedIp]
         .find((value) => typeof value === 'string')
