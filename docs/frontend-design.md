@@ -35,7 +35,7 @@
 - `@clash-sentinel/shared` 提供响应、设置、任务、事件和 SSE 通知 Schema。
 - 原生 `EventSource` 接收 SSE 失效通知；原生 `sessionStorage` 只保存当前任务 ID。
 
-生产环境中页面和 API 均由 Koa 在 `127.0.0.1:3000` 提供。页面没有认证或公网部署设计，安全边界依赖服务只监听本机回环地址。
+生产环境中页面和 API 均由 Koa 提供，PM2 部署时监听 `127.0.0.1:4020`。浏览器通过 Nginx 的 `/clash-sentinel/` 子路径访问，代理路由仅允许回环地址访问。
 
 ## 3. 当前实现结构
 

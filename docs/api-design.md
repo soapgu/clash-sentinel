@@ -12,7 +12,7 @@
 
 ## 1. 通用约定
 
-- 服务仅监听 `127.0.0.1:3000`，由同源 Web 页面调用，不启用 CORS。
+- 服务仅监听回环地址，默认端口为 `4311`。Web 页面同源调用 API，不启用 CORS。
 - Content-Type 为 `application/json`；JSON 请求体最大 32 KiB，未知字段一律拒绝。
 - SQLite 业务读取接口只访问 SQLite；`GET /api/monitoring` 只读取调度器当前进程的内存运行态和当前设置。所有读取接口均不启动 Shell、不执行网络检测、不创建任务或事件。
 - API 请求处理超时为 10 秒；已返回 `202` 的后台任务使用 LegacyAdapter 自身超时。

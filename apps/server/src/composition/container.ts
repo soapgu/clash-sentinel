@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { resolveHttpPort } from '@clash-sentinel/shared';
 import {
   container,
   instanceCachingFactory,
@@ -177,6 +178,7 @@ export function createAppContainer(
   options: CreateAppContainerOptions = {},
 ): DependencyContainer {
   const environment = options.environment ?? process.env;
+  const port = resolveHttpPort(environment.CLASH_SENTINEL_PORT);
   const config =
     options.config ?? loadServerConfig(environment, options.projectRoot);
   const logger =
@@ -195,7 +197,7 @@ export function createAppContainer(
   child.register(TOKENS.clock, { useValue: Date.now });
   child.register(TOKENS.dateClock, { useValue: () => new Date() });
   child.register(TOKENS.httpListen, {
-    useValue: { port: 3000, host: '127.0.0.1' },
+    useValue: { port, host: '127.0.0.1' },
   });
   return registerServices(child, environment, config, logger);
 }

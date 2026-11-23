@@ -13,6 +13,7 @@
   "scripts": {
     "dev": "npm run build -w @clash-sentinel/shared && concurrently --kill-others --success first \"npm run watch -w @clash-sentinel/shared\" \"npm run dev -w @clash-sentinel/server\" \"npm run dev -w @clash-sentinel/web\"",
     "build": "npm run build -w @clash-sentinel/shared && npm run build -w @clash-sentinel/server && npm run build -w @clash-sentinel/web",
+    "build:nginx": "CLASH_SENTINEL_BASE_PATH=/clash-sentinel/ npm run build",
     "start": "node apps/server/dist/index.js",
     "test": "npm run build -w @clash-sentinel/shared && vitest run",
     "test:prototype": "npm run build -w @clash-sentinel/shared && playwright test --config playwright.prototype.config.ts",

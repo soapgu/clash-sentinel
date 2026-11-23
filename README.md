@@ -7,14 +7,14 @@ Clash Sentinel 是面向 macOS 与 Clash Verge Rev / Mihomo 的本机连接健�
 ## 安装与运行
 
 使用 Node.js 24 LTS 和 npm。项目通过 `.nvmrc` 与 `.node-version` 标识 Node 主版本，CI 同样使用 Node.js 24。
-需要 macOS 和已配置的 Clash Verge Rev / Mihomo；缺少 Clash 配置或控制接口时服务会告警并降级启动，页面仍可查看已有记录，检测及配置操作会报告失败。启动前确认 3000 端口空闲。`.env.example` 列出可选路径覆盖项；程序不会自动加载该文件，如需覆盖请在终端显式导出变量。
+需要 macOS 和已配置的 Clash Verge Rev / Mihomo；缺少 Clash 配置或控制接口时服务会告警并降级启动，页面仍可查看已有记录，检测及配置操作会报告失败。启动前确认所用端口空闲。`.env.example` 列出可选环境变量；程序不会自动加载该文件，如需覆盖请在终端显式导出变量。
 
 ```bash
 npm ci
 npm run dev
 ```
 
-开发页面：[http://127.0.0.1:5173](http://127.0.0.1:5173)。Koa API 监听 `127.0.0.1:3000`，Vite 转发 `/api` 请求。开发命令先构建共享包，再启动共享包监听、后台与前端；按 `Ctrl+C` 停止全部开发进程。
+开发页面：[http://127.0.0.1:5173](http://127.0.0.1:5173)。Koa API 默认监听 `127.0.0.1:4311`，Vite 转发 `/api` 请求。可用 `CLASH_SENTINEL_PORT` 同时覆盖后台端口和开发代理目标。开发命令先构建共享包，再启动共享包监听、后台与前端；按 `Ctrl+C` 停止全部开发进程。
 
 生产构建与运行：
 
@@ -23,9 +23,48 @@ npm run build
 npm start
 ```
 
-打开 [http://127.0.0.1:3000](http://127.0.0.1:3000)，页面与 API 均由 Koa 提供。端口占用会报错退出，不自动更换端口。按 `Ctrl+C` 停止服务。
+打开 [http://127.0.0.1:4311](http://127.0.0.1:4311)，页面与 API 均由 Koa 提供。端口占用会报错退出，不自动更换端口。按 `Ctrl+C` 停止服务。
 
 `GET /api/health` 仅确认后台进程可以响应，不代表 Clash 或互联网健康。退出时停止接收任务与 SSE 连接，等待已开始的操作及恢复步骤结束后关闭数据库；操作进行中请等待退出完成，不要连续按两次 `Ctrl+C` 强制退出。
+
+### 本机 PM2 与 Nginx 部署
+
+使用 Node.js 24 环境中的 PM2 启动生产构建。后端监听 `127.0.0.1:4020`，前端使用 `/clash-sentinel/` 基础路径。
+
+```bash
+npm ci
+npm run build:nginx
+pm2 start ecosystem.config.cjs --only clash-sentinel
+```
+
+将以下配置放入现有 `localhost:8080` 的 `server` 块所加载的路由目录。本机路径为 `/opt/homebrew/etc/nginx/servers/conf.d/clash-sentinel.conf`。
+
+```nginx
+location = /clash-sentinel {
+    absolute_redirect off;
+    return 308 /clash-sentinel/$is_args$args;
+}
+
+location /clash-sentinel/ {
+    allow 127.0.0.1;
+    allow ::1;
+    deny all;
+    proxy_pass http://127.0.0.1:4020/;
+}
+
+location = /clash-sentinel/api/stream {
+    allow 127.0.0.1;
+    allow ::1;
+    deny all;
+    proxy_pass http://127.0.0.1:4020/api/stream;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_buffering off;
+    proxy_read_timeout 60s;
+}
+```
+
+运行 `nginx -t && nginx -s reload`，然后打开 [管理页面](http://localhost:8080/clash-sentinel/)。执行 `curl -fsS http://localhost:8080/clash-sentinel/api/health` 检查后台响应，用 `pm2 logs clash-sentinel` 查看日志。更新时先执行 `npm run build:nginx`，再执行 `pm2 restart ecosystem.config.cjs --only clash-sentinel`。
 
 ## 工程与检查
 
@@ -89,7 +128,7 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-`npm run test:e2e` 会构建并启动生产服务，要求端口 3000 空闲。`npm run format` 用于格式化新增工程文件，已验收的设计文档和图稿排除在格式化范围之外。
+`npm run test:e2e` 会构建并启动隔离的测试服务，要求端口 `4312` 空闲。`npm run format` 用于格式化新增工程文件，已验收的设计文档和图稿排除在格式化范围之外。
 
 GitHub Actions 在 push 和 pull request 时使用 macOS runner 执行上述检查，失败时保存 Playwright 报告与追踪文件。本阶段未配置自动发布或部署。
 首版发布说明及已知限制见 [v0.1.0 发布说明](docs/releases/v0.1.0.md)。发布物为 GitHub 自动生成的源码包，不包含本机运行数据；检出后需自行安装依赖并构建。
@@ -117,7 +156,7 @@ GitHub Actions 在 push 和 pull request 时使用 macOS runner 执行上述检�
 - 仅管理 Clash Verge Rev 当前选择的订阅。
 - “切换 IP”仅指切换同一入口域名的候选 IPv4，不是切换代理节点或更换出口 IP。
 - Web 管理服务仅监听本机地址，不开放公网控制。
-- 首版通过终端运行，LaunchAgent、登录自启动和安装器留待后续版本。
+- 支持在终端运行，也可由本机 PM2 托管并通过 Nginx 访问。
 - 暂不支持 Android 自动控制、跨平台运行、多设备管理和节点优选。
 
 ## 开发路线

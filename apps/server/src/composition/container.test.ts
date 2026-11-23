@@ -14,9 +14,10 @@ import type { RuntimePaths } from '../project-paths.js';
 /** 构造只依赖值 token 的测试容器，避免读取真实配置和输出日志。 */
 function createTestContainer(
   logger: AppLogger = noopLogger,
+  environment: NodeJS.ProcessEnv = {},
 ): DependencyContainer {
   return createAppContainer({
-    environment: {},
+    environment,
     config: {
       logging: { redactSensitiveData: true },
       storage: { redactSensitiveData: true },
@@ -49,6 +50,30 @@ class ScopedConsumer {
 }
 
 describe('createAppContainer', () => {
+  it.each([
+    [undefined, 4311],
+    ['4020', 4020],
+    ['1', 1],
+    ['65535', 65535],
+  ])('端口设置 %s 解析为本机监听端口 %i', (value, port) => {
+    const child = createTestContainer(noopLogger, {
+      CLASH_SENTINEL_PORT: value,
+    });
+    expect(child.resolve(TOKENS.httpListen)).toEqual({
+      host: '127.0.0.1',
+      port,
+    });
+  });
+
+  it.each(['', '0', '65536', '-1', ' 4020', '40.2', '4e3', '0xff'])(
+    '拒绝非法端口设置 %j',
+    (value) => {
+      expect(() =>
+        createTestContainer(noopLogger, { CLASH_SENTINEL_PORT: value }),
+      ).toThrow('CLASH_SENTINEL_PORT');
+    },
+  );
+
   it('在不依赖 emitDecoratorMetadata 的情况下通过显式 token 完成构造注入', () => {
     const child = createTestContainer();
     const consumer = child.resolve(ClockConsumer);

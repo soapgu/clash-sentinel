@@ -120,27 +120,32 @@ const writeJson = <T>(
 export type ManualAction =
   'health-check' | 'diagnose' | 'apply' | 'reset' | 'rollback';
 
+const apiBase = `${import.meta.env.BASE_URL}api`;
+
 /** 看板读写 API；业务写操作只能通过这里进入统一错误处理。 */
 export const api = {
   health: () =>
-    requestJson('/api/health', healthResponseSchema, {
+    requestJson(`${apiBase}/health`, healthResponseSchema, {
       timeoutMs: HEALTH_REQUEST_TIMEOUT_MS,
     }),
-  monitoring: () => readSnapshot('/api/monitoring', monitoringResponseSchema),
-  status: () => readSnapshot('/api/status', statusResponseSchema),
-  sites: () => readSnapshot('/api/sites', sitesResponseSchema),
-  candidates: () => readSnapshot('/api/candidates', candidatesResponseSchema),
+  monitoring: () =>
+    readSnapshot(`${apiBase}/monitoring`, monitoringResponseSchema),
+  status: () => readSnapshot(`${apiBase}/status`, statusResponseSchema),
+  sites: () => readSnapshot(`${apiBase}/sites`, sitesResponseSchema),
+  candidates: () =>
+    readSnapshot(`${apiBase}/candidates`, candidatesResponseSchema),
   events: () =>
-    readSnapshot('/api/events?limit=50&offset=0', eventsResponseSchema),
-  settings: () => readSnapshot('/api/settings', settingsResponseSchema),
-  task: (id: string) => readSnapshot(`/api/tasks/${id}`, taskResponseSchema),
+    readSnapshot(`${apiBase}/events?limit=50&offset=0`, eventsResponseSchema),
+  settings: () => readSnapshot(`${apiBase}/settings`, settingsResponseSchema),
+  task: (id: string) =>
+    readSnapshot(`${apiBase}/tasks/${id}`, taskResponseSchema),
   action: (action: ManualAction, body: object = {}) =>
     writeJson(
-      `/api/actions/${action}`,
+      `${apiBase}/actions/${action}`,
       'POST',
       body,
       taskAcceptedResponseSchema,
     ),
   updateSettings: (settings: SettingsUpdate) =>
-    writeJson('/api/settings', 'PUT', settings, settingsResponseSchema),
+    writeJson(`${apiBase}/settings`, 'PUT', settings, settingsResponseSchema),
 };

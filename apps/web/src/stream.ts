@@ -124,7 +124,9 @@ export class DashboardStream {
   private connect() {
     if (this.stopped) return;
     this.setState(this.reconnectAttempt === 0 ? 'connecting' : 'offline');
-    const source = this.createEventSource('/api/stream');
+    const source = this.createEventSource(
+      `${import.meta.env.BASE_URL}api/stream`,
+    );
     this.source = source;
     source.onopen = () => {
       if (this.source === source) this.setState('connected');
