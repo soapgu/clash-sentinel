@@ -30,11 +30,34 @@ ip\teligible\tsuccess\ttotal\tsuccess_rate\taverage_ms\tfailed_ports\tsources
     expect(JSON.stringify(result)).not.toContain('abc');
   });
 
-  test('解析跳过报告', () => {
+  test('解析新版来源证据并拒绝与表头不符的候选行', () => {
+    const report = `# generated_at\t2026-09-08 10:00:00 +0800
+# status\ttestable
+# profile_uid\tmain
+# test_rounds\t1
+# dns_config\tsubscription:fallback:1:https@unused.example:443
+ip\teligible\tsuccess\ttotal\tsuccess_rate\taverage_ms\tfailed_ports\tsources\tsource_labels
+198.51.100.20\tyes\t1\t1\t100%\t12.3\t-\tsubscription:nameserver:2:https@dns.example:443~abcdef\t订阅 DoH #2 直接响应（dns.example:443；运行配置同址）
+`;
+    const result = parseDiagnosisReport(report);
+    expect(result.candidates[0]).toMatchObject({
+      sources: ['subscription:nameserver:2:https@dns.example:443~abcdef'],
+      sourceLabels: '订阅 DoH #2 直接响应（dns.example:443；运行配置同址）',
+    });
+    expect(JSON.stringify(result)).not.toContain('unused.example');
+    expect(() =>
+      parseDiagnosisReport(report.replace(/\t订阅 DoH.*$/m, '')),
+    ).toThrow('诊断候选行字段数量错误');
+    expect(() =>
+      parseDiagnosisReport(report.replace('\tsource_labels', '')),
+    ).toThrow('诊断候选行字段数量错误');
+  });
+
+  test.each(['fixed_ip', 'single_dns_ip'])('解析历史跳过报告 %s', (reason) => {
     const result = parseDiagnosisReport(`# generated_epoch\t1
 # generated_at\t2026-09-08 10:00:00 +0800
 # status\tskipped
-# skip_reason\tfixed_ip
+# skip_reason\t${reason}
 # profile_uid\tmain
 # profile_name\t测试订阅
 # raw_file\tmain.yaml
@@ -46,7 +69,7 @@ ip\teligible\tsuccess\ttotal\tsuccess_rate\taverage_ms\tfailed_ports\tsources
 `);
     expect(result).toMatchObject({
       status: 'skipped',
-      skipReason: 'fixed_ip',
+      skipReason: reason,
       candidates: [],
       recommendedIp: null,
     });

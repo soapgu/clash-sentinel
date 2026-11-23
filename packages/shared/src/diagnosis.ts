@@ -26,6 +26,7 @@ export const diagnosisCandidateSchema = z.object({
   averageMs: z.number().nonnegative(),
   failedPorts: z.array(z.number().int().min(1).max(65535)),
   sources: z.array(z.string().min(1)),
+  sourceLabels: z.string().min(1).optional(),
 });
 /** 单个入口候选 IP 的严格测试结果。 */
 export type DiagnosisCandidate = z.infer<typeof diagnosisCandidateSchema>;

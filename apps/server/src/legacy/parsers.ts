@@ -99,27 +99,40 @@ export function parseDiagnosisReport(content: string): DiagnosisResult {
     throw new LegacyParseError('诊断报告缺少有效状态');
 
   const candidates = [];
-  let headerFound = false;
+  const legacyHeader =
+    'ip\teligible\tsuccess\ttotal\tsuccess_rate\taverage_ms\tfailed_ports\tsources';
+  const sourceLabelsHeader = legacyHeader + '\tsource_labels';
+  let columnCount = 0;
   for (const line of content.split(/\r?\n/)) {
     if (
-      line ===
-      'ip\teligible\tsuccess\ttotal\tsuccess_rate\taverage_ms\tfailed_ports\tsources'
+      !columnCount &&
+      (line === legacyHeader || line === sourceLabelsHeader)
     ) {
-      headerFound = true;
+      columnCount = line === sourceLabelsHeader ? 9 : 8;
       continue;
     }
-    if (!headerFound || !line) continue;
+    if (!columnCount || !line) continue;
     const fields = line.split('\t');
-    if (fields.length !== 8)
+    if (fields.length !== columnCount)
       throw new LegacyParseError('诊断候选行字段数量错误');
-    const [ip, eligible, success, total, rate, average, failed, sources] =
-      fields;
+    const [
+      ip,
+      eligible,
+      success,
+      total,
+      rate,
+      average,
+      failed,
+      sources,
+      sourceLabels,
+    ] = fields;
     if (eligible !== 'yes' && eligible !== 'no')
       throw new LegacyParseError('诊断候选资格字段错误');
     const successRate = Number(rate?.replace(/%$/, ''));
     const averageMs = Number(average);
     if (!Number.isFinite(successRate) || !Number.isFinite(averageMs))
       throw new LegacyParseError('诊断候选数值字段错误');
+    const sourceEvidence = nullIfEmptyOrDash(sourceLabels);
     candidates.push({
       ip,
       eligible: eligible === 'yes',
@@ -135,9 +148,10 @@ export function parseDiagnosisReport(content: string): DiagnosisResult {
               .map((port) => parsePositiveInteger(port, 'failed_ports')),
       sources:
         sources === '-' ? [] : (sources ?? '').split(',').filter(Boolean),
+      ...(sourceEvidence ? { sourceLabels: sourceEvidence } : {}),
     });
   }
-  if (status === 'testable' && !headerFound)
+  if (status === 'testable' && !columnCount)
     throw new LegacyParseError('可测试报告缺少候选表头');
 
   const ports = metadata.get('tested_ports');

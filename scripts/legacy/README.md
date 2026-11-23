@@ -1,8 +1,10 @@
 # Legacy 适配目录
 
-`clash-entry-ip.sh` 原样来自 `soapgu/clash-network-test` 的提交
-`f20177e401d7b7cfa7489896509fa3f11c2ebe23`。升级时必须从明确提交重新复制并运行
-本项目的适配层测试，不要直接修改此副本。
+`clash-entry-ip.sh` 的上游基线为 `soapgu/clash-network-test` 提交
+`5dccc377a5e0d0ba90c976458409c97ef3dbf873`。本次同步将上游从 `e565efc`
+到 `5dccc37` 的脚本差异合入，包含订阅与运行配置的 DNS 候选发现、单候选端口
+测试及新版诊断报告。副本保留 Sentinel 专用的控制接口密钥环境变量、订阅身份
+监测和失败恢复状态。后续升级应核对明确的上游提交和这些本地差异，并运行适配层测试。
 
 服务端首版只调用 `status`、`diagnose`、`health`、`apply <IPv4>`、`reset` 和
 `rollback`。交互式 `switch`、LaunchAgent 的 `monitor` 子命令和内部 `__probe`

@@ -159,10 +159,21 @@ const healthStatusDetail: Migration = {
   },
 };
 
+const diagnosisSourceLabels: Migration = {
+  version: 4,
+  name: 'diagnosis_source_labels',
+  up(database) {
+    database.exec(
+      'ALTER TABLE diagnosis_candidates ADD COLUMN source_labels TEXT',
+    );
+  },
+};
+
 export const migrations: readonly Migration[] = [
   initialSchema,
   taskRecoveryStatus,
   healthStatusDetail,
+  diagnosisSourceLabels,
 ];
 
 /**

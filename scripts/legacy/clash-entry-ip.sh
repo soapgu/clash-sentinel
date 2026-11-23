@@ -79,13 +79,234 @@ classify(){
 }
 
 nameservers(){ ruby --disable-gems -ryaml -e 'begin;d=YAML.load_file(ARGV[0])||{};x=d["dns"]||{};(Array(x["nameserver"])+Array(x["default-nameserver"])+Array(x["proxy-server-nameserver"])).each{|v|puts v if v.to_s=~/\A(?:\d{1,3}\.){3}\d{1,3}\z/};rescue StandardError;end' "$RUNTIME_CONFIG"|sort -u; }
+# 分别查询订阅上游，避免内核缓存只返回其中一个地址；不输出 DoH 私有路径。
+subscription_candidates(){
+ ruby --disable-gems -ryaml -ruri -rresolv -ropen3 -rdigest - "$1" "$RUNTIME_CONFIG" "$2" "$3" <<'RUBY'
+domain, runtime, raw, inventory = ARGV
+jobs = {}
+def dns_config(path)
+  # 只解析顶层 dns 块，兼容原始订阅中格式不规范的展示节点。
+  lines = []; inside = false
+  File.foreach(path) do |line|
+    unless inside
+      next unless line =~ /^dns:/
+      inside = true
+    else
+      break if line =~ /^[^\s#]/
+    end
+    lines << line
+  end
+  (YAML.load(lines.join) || {}).fetch("dns", {}) || {}
+end
+def ipv4?(value)
+  parts = value.to_s.split(".", -1)
+  parts.size == 4 && parts.all? { |p| p =~ /\A\d{1,3}\z/ && p.to_i <= 255 }
+end
+def query_doh(url, domain)
+  current = domain; visited = []
+  8.times do
+    raise "CNAME loop" if visited.include?(current)
+    visited << current
+    query = Resolv::DNS::Message.new(rand(65536)); query.rd = 1
+    query.add_question(current, Resolv::DNS::Resource::IN::A)
+    body, _, status = Open3.capture3("curl", "--silent", "--fail", "--noproxy", "*",
+      "--connect-timeout", "3", "--max-time", "5", "--max-filesize", "65535",
+      "-H", "Content-Type: application/dns-message", "-H", "Accept: application/dns-message",
+      "--data-binary", "@-", url, :stdin_data => query.encode, :binmode => true)
+    raise "DoH request failed" unless status.success?
+    reply = Resolv::DNS::Message.decode(body)
+    raise "invalid DNS response" unless reply.id == query.id && reply.qr == 1 && reply.tc == 0
+    return [] if reply.rcode == 3 # NXDOMAIN
+    raise "DNS server error" unless reply.rcode == 0
+    records = reply.answer
+    # 只接受查询域名及其 CNAME 链上的 A 记录，忽略无关附加地址。
+    chain = [current.downcase.sub(/\.$/, "")]
+    8.times do
+      cname = records.find { |name, _, rr| name.to_s.downcase == chain.last && rr.is_a?(Resolv::DNS::Resource::IN::CNAME) }
+      break unless cname
+      target = cname[2].name.to_s.downcase
+      raise "CNAME loop" if chain.include?(target)
+      chain << target
+    end
+    ips = records.select { |name, _, rr| chain.include?(name.to_s.downcase) && rr.is_a?(Resolv::DNS::Resource::IN::A) }.map { |_, _, rr| rr.address.to_s }
+    return ips unless ips.empty?
+    return [] if chain.size == 1
+    current = chain.last
+  end
+  raise "CNAME chain too long"
+end
+[["runtime", runtime], ["subscription", raw]].each do |source, path|
+  begin
+    dns = dns_config(path)
+    next unless dns.is_a?(Hash)
+    entries = []
+    if source == "runtime" && dns["enable"] != false && dns["listen"].is_a?(String)
+      listen = dns["listen"].sub(/\A0\.0\.0\.0:/, "127.0.0.1:").sub(/\A\[::\]:/, "[::1]:")
+      entries << ["mihomo-dns", "udp://#{listen}"]
+    end
+    %w[proxy-server-nameserver nameserver fallback].each do |field|
+      Array(dns[field]).each_with_index { |value, i| entries << ["#{source}:#{field}:#{i + 1}", value] }
+    end
+    entries.each do |label, value|
+      next unless value.is_a?(String) && !value.empty?
+      protocol = value.include?("://") ? value.split("://", 2).first : "udp"
+      (jobs[value] ||= []) << "#{label}:#{protocol}"
+    end
+  rescue StandardError
+    warn "警告：无法读取 #{source} 的 DNS 配置，继续使用其他候选来源"
+  end
+end
+servers = {}
+jobs.each do |value, labels|
+  begin
+    uri = URI.parse(value.include?("://") ? value : "udp://#{value}")
+    raise "invalid DNS server" unless uri.hostname
+    host = uri.hostname.include?(":") ? "[#{uri.hostname}]" : uri.hostname
+    endpoint = "#{host}:#{uri.port || (uri.scheme == 'https' ? 443 : 53)}"
+    raise "invalid DNS endpoint" if endpoint =~ /[\s,@~]/
+    servers[value] = { :uri => uri, :labels => labels.uniq, :endpoint => endpoint,
+      :identity => Digest::SHA256.hexdigest(value)[0, 12] }
+  rescue StandardError
+    warn "警告：#{labels.uniq.join(',')} DNS 地址暂不支持，继续使用其他候选来源"
+  end
+end
+local_endpoints = servers.values.select { |s| s[:labels].include?("mihomo-dns:udp") }.map { |s| s[:endpoint] }
+File.open(inventory, "w") do |file|
+  servers.each_value do |server|
+    local = local_endpoints.include?(server[:endpoint]) ? ":local" : ""
+    server[:tags] = server[:labels].map { |label| "#{label}#{local}@#{server[:endpoint]}~#{server[:identity]}" }
+    file.puts server[:tags].join(",")
+  end
+end
+servers.to_a.each_slice(8) do |batch|
+  batch.map do |value, server|
+    labels = server[:labels]
+    Thread.new do
+      begin
+        # 带 # 的 Mihomo 专用参数交由本地内核处理，不擅自丢弃其代理或安全语义。
+        raise "unsupported DNS options" if value.include?("#")
+        uri = server[:uri]
+        case uri.scheme
+        when "https"
+          ips = query_doh(value, domain)
+        when "udp", "tcp"
+          raise "invalid DNS server" unless uri.hostname && uri.userinfo.nil?
+          args = ["dig", "@#{uri.hostname}", "-p", (uri.port || 53).to_s, "+time=2", "+tries=1", "+short"]
+          args << "+tcp" if uri.scheme == "tcp"
+          out, _, status = Open3.capture3(*args, "A", domain)
+          raise "DNS request failed" unless status.success?
+          ips = out.lines.map(&:strip).select { |v| ipv4?(v) }
+        else
+          raise "unsupported DNS protocol"
+        end
+        [server[:tags], ips.select { |ip| ipv4?(ip) }.uniq]
+      rescue StandardError
+        warn "警告：#{labels.uniq.join(',')} DNS 查询失败或格式暂不支持，继续使用其他候选来源"
+        [[], []]
+      end
+    end
+  end.each do |thread|
+    labels, ips = thread.value
+    ips.each { |ip| labels.each { |label| puts "#{ip}\t#{label}" } }
+  end
+end
+RUBY
+}
 discover(){
  local domain=$1 output=$2 root;:>"$output"
  add(){ local src=$1;shift;"$@" 2>/dev/null|awk -v s="$src" '{for(i=1;i<=NF;i++)if($i~/^([0-9]{1,3}\.){3}[0-9]{1,3}$/)print $i"\t"s}'>>"$output"||true; }
  add system dig +short A "$domain";command -v dscacheutil>/dev/null&&add cache dscacheutil -q host -a name "$domain"
  nameservers|while read -r ns;do [ -n "$ns" ]&&add "resolver:$ns" dig "@$ns" +short A "$domain";done
+ subscription_candidates "$domain" "$3" "$output.sources">>"$output"
  root=$(awk -F. '{print $(NF-1)"."$NF}'<<<"$domain");dig +short NS "$root" 2>/dev/null|sed 's/\.$//'|while read -r ns;do [ -n "$ns" ]&&add "authority:$ns" dig "@$ns" +short A "$domain";done
  awk -F '\t' 'function ok(s,a,i){if(split(s,a,".")!=4)return 0;for(i=1;i<=4;i++)if(a[i]!~/^[0-9]+$/||a[i]>255)return 0;return 1}ok($1){if(!z[$1,$2]++)v[$1]=v[$1](v[$1]?",":"")$2}END{for(i in v)print i"\t"v[i]}' "$output"|sort -t. -k1,1n -k2,2n -k3,3n -k4,4n>"$output.tmp";mv "$output.tmp" "$output"
+}
+
+# 保留机器可读的来源标签，另附中文说明用于终端选择和报告阅读。
+source_labels(){
+ awk -F '\t' -v column="$1" -v mode="${2:-evidence}" '
+ BEGIN{OFS="\t"}
+ function append_item(list,value){return list==""?value:list"、"value}
+ function describe(tag,same_runtime,a,parts,address,port,n,origin,role,protocol,suffix,response){
+  split(tag,parts,"@");n=split(parts[1],a,":");split(parts[2],address,"~")
+  suffix=address[1]
+  if(mode=="short_config"&&length(suffix)>36){n=split(suffix,port,":");suffix=substr(suffix,1,8)"…:"port[n]}
+  if(same_runtime&&mode!="short_config")suffix=suffix"；运行配置同址"
+  if(tag=="system")return "系统 DNS 查询（应答服务器未记录）"
+  if(tag=="cache")return "系统主机查询（缓存或 hosts 等，应答上游未记录）"
+  if(tag=="mihomo-dns"||a[1]=="mihomo-dns"||a[5]=="local"){
+   if(mode=="config"||mode=="short_config")return "Clash 本地 DNS（"address[1]"）"
+   return "Clash 本地 DNS 返回（"address[1]"；实际命中上游未知）"
+  }
+  if(a[1]=="authority")return "权威 DNS 直接响应（"substr(tag,11)"）"
+  if(a[1]=="resolver"){
+   origin=(a[2]=="119.28.28.28"||a[2]=="119.29.29.29"||a[2]=="223.5.5.5"||a[2]=="223.6.6.6")?"公共 DNS":"配置 DNS"
+   return origin" 直接响应（"substr(tag,10)"）"
+  }
+  if(a[1]=="subscription"||a[1]=="runtime"){
+   origin=a[1]=="subscription"?"订阅":"运行配置"
+   role=a[2]=="proxy-server-nameserver"?"节点解析 ":(a[2]=="fallback"?"备用解析 ":"")
+   protocol=a[4]=="https"?"DoH":(a[4]=="tcp"?"TCP DNS":(a[4]=="udp"?"UDP DNS":"DNS"))
+   if(mode=="short_config")return origin" "role"DNS #"a[3]"（"suffix"）"
+   response=mode=="config"?"":" 直接响应"
+   return origin" "role protocol" #"a[3] response"（"suffix"）"
+  }
+  return tag
+ }
+ function labels(tags,a,seen,subscription,runtime,parts,kind,n,i,label,key,result){
+  n=split(tags,a,",");split("",seen);split("",subscription);split("",runtime);result=""
+  # 只合并完整 URL 相同的查询；隐藏路径仍由摘要区分，不能仅按域名合并。
+  for(i=1;i<=n;i++){
+   split(a[i],parts,"@");split(parts[1],kind,":");key=parts[2]
+   if(key!=""&&kind[1]=="subscription")subscription[key]=1
+   if(key!=""&&kind[1]=="runtime")runtime[key]=1
+  }
+  for(i=1;i<=n;i++){
+   split(a[i],parts,"@");split(parts[1],kind,":");key=parts[2]
+   if(key!=""&&kind[1]=="runtime"&&subscription[key])continue
+   label=describe(a[i],key!=""&&kind[1]=="subscription"&&runtime[key]);if(label==""||seen[label]++)continue
+   if(result!="")result=result"、"
+   result=result label
+  }
+  return result==""?"未知来源":result
+ }
+ # 日常选择只显示三组结论；完整端点和配置证据仍保存在报告中。
+ function brief(tags,a,subscription,seen,parts,kind,n,i,key,label,subtext,localtext,other,public_count,configured_count,authority_count,system_seen,cache_seen){
+  n=split(tags,a,",");split("",subscription);split("",seen)
+  for(i=1;i<=n;i++){
+   split(a[i],parts,"@");split(parts[1],kind,":")
+   if(kind[1]=="subscription"&&kind[5]!="local")subscription[parts[2]]=1
+  }
+  for(i=1;i<=n;i++){
+   split(a[i],parts,"@");split(parts[1],kind,":");key=parts[2]
+   if(kind[1]=="mihomo-dns"||kind[5]=="local"){localtext="返回过此 IP（具体上游未知）";continue}
+   if(kind[1]=="subscription"||kind[1]=="runtime"){
+    if(kind[1]=="runtime"&&subscription[key])continue
+    label=(kind[2]=="proxy-server-nameserver"?"节点 ":(kind[2]=="fallback"?"备用 ":""))"DNS #"kind[3]
+    if(kind[1]=="subscription"){
+     if(!seen["s:"label]++)subtext=append_item(subtext,label)
+    }else{
+     label="运行配置 "label
+     if(!seen["r:"label]++)other=append_item(other,label)
+    }
+   }else if(kind[1]=="resolver"){
+    if(!seen[a[i]]++){
+     if(kind[2]=="119.28.28.28"||kind[2]=="119.29.29.29"||kind[2]=="223.5.5.5"||kind[2]=="223.6.6.6")public_count++
+     else configured_count++
+    }
+   }else if(kind[1]=="authority"){
+    if(!seen[a[i]]++)authority_count++
+   }else if(a[i]=="system")system_seen=1
+   else if(a[i]=="cache")cache_seen=1
+  }
+  if(public_count)other=append_item(other,"公共 DNS（"public_count" 个）")
+  if(configured_count)other=append_item(other,"配置 DNS（"configured_count" 个）")
+  if(authority_count)other=append_item(other,"权威 DNS（"authority_count" 个）")
+  if(system_seen)other=append_item(other,"系统 DNS")
+  if(cache_seen)other=append_item(other,"系统主机查询")
+  print $0,(subtext==""?"本轮未获取到此 IP":subtext" 返回过此 IP"),localtext,other
+ }
+ {if(mode=="brief")brief($column);else print $0,labels($column)}'
 }
 
 select_ports(){ awk -v w="$SAMPLE_PORT_COUNT" '{a[++n]=$1;if($1==9051)f=n}END{if(n<=w){for(i=1;i<=n;i++)print a[i];exit}for(i=0;i<w;i++)s[1+int(i*(n-1)/(w-1))]=1;if(f&&!s[f]){s[f]=1;for(i=n;i>=1;i--)if(s[i]&&i!=f){delete s[i];break}}for(i=1;i<=n;i++)if(s[i])print a[i]}' "$1">"$2"; }
@@ -154,7 +375,7 @@ publish(){ cp "$1" "$LATEST_REPORT";chmod 600 "$1" "$LATEST_REPORT" 2>/dev/null|
 skip(){ header "$3" skipped "$1" "$4" "$5" "$6" "$7" "${8:--}" -;printf '# detail\t%s\n' "$2">>"$3";publish "$3";log "跳过：$2";log "报告：$3"; }
 
 diagnose(){
- need ruby;need dig;need nc;need perl;need xargs;need shasum;check_files;safe_dirs
+ need ruby;need dig;need nc;need perl;need xargs;need shasum;need curl;check_files;safe_dirs
  local work meta uid name raw script rawpath hash nodes cls kind target report candidates count ports samples pcsv tasks results ip p r desc ipv6 recommended alternatives unavailable
  work=$(mktemp -d "${TMPDIR:-/tmp}/entry-diag.XXXXXX")||die '无法创建临时目录';trap 'rm -rf "${work:-}"' EXIT INT TERM
  meta=$(current_profile)||die '无法定位当前订阅';IFS="$TAB" read -r uid name raw script<<<"$meta";rawpath="$APP_DIR/profiles/$raw";[ -f "$rawpath" ]||die "找不到原始订阅：$rawpath";hash=$(fingerprint "$rawpath")
@@ -165,16 +386,31 @@ diagnose(){
  multiple_ips)desc=$(awk -F '\t' '$1=="ip"{printf "%s%s（%s个节点）",s,$2,$3;s=", "}' "$cls.entries");skip multiple_ips "原始订阅包含多个独立 IP：${desc}；不能安全替换为单一入口" "$report" "$uid" "$name" "$raw" "$hash";return;;
  mixed)skip mixed_endpoints '订阅同时包含域名和字面量 IP，无法确认统一入口' "$report" "$uid" "$name" "$raw" "$hash";return;;
  multiple_domains)desc=$(awk -F '\t' '$1=="host"{printf "%s%s（%s个节点）",s,$2,$3;s=", "}' "$cls.entries");skip multiple_domains "订阅包含多个真实入口域名：${desc}；不能统一锁定" "$report" "$uid" "$name" "$raw" "$hash";return;;esac
- candidates="$work/candidates";log "正在发现 $target 的入口 IPv4…";discover "$target" "$candidates";count=$(wc -l<"$candidates"|tr -d ' ')
+ candidates="$work/candidates";log "正在发现 $target 的入口 IPv4…";discover "$target" "$candidates" "$rawpath";count=$(wc -l<"$candidates"|tr -d ' ')
+ if [ -s "$candidates.sources" ];then
+  log 'DNS 编号对照（完整地址见报告）：'
+  source_labels 1 short_config <"$candidates.sources"|awk -F '\t' '{printf "  %s\n",$2}'
+ fi
  if [ "$count" -eq 0 ];then ipv6=$(dig +short AAAA "$target" 2>/dev/null|head -1);if [ -n "$ipv6" ];then skip ipv6_only "$target 仅发现 IPv6入口，当前脚本暂不支持" "$report" "$uid" "$name" "$raw" "$hash" "$target";else skip no_ipv4 "$target 没有解析到有效 IPv4" "$report" "$uid" "$name" "$raw" "$hash" "$target";fi;return;fi
- if [ "$count" -eq 1 ];then ip=$(awk -F '\t' 'NR==1{print $1}' "$candidates");skip single_dns_ip "$target 只解析到一个 IPv4：${ip}，没有多 IP漂移风险" "$report" "$uid" "$name" "$raw" "$hash" "$target";return;fi
  ports="$work/ports";awk -F '\t' -v d="$target" '$4!="yes"&&tolower($2)==d{print $3}' "$nodes"|sort -nu>"$ports";samples="$work/samples";select_ports "$ports" "$samples";pcsv=$(paste -sd, "$samples")
- log '候选入口：';awk -F '\t' '{printf "  %s（%s）\n",$1,$2}' "$candidates";log "测试端口：${pcsv}；每个 IP × 端口测试 ${TEST_ROUNDS}次"
+ log '来源说明：“返回过”表示本轮查询取得了此 IP；不表示 Clash 当前正在连接它。'
+ log '候选入口：';source_labels 2 brief <"$candidates"|awk -F '\t' '{printf "  %s\n    订阅来源：%s\n",$1,$(NF-2);if($(NF-1)!="")printf "    Clash 本地 DNS：%s\n",$(NF-1);if($NF!="")printf "    其他来源：%s\n",$NF}';log "测试端口：${pcsv}；每个 IP × 端口测试 ${TEST_ROUNDS}次"
  tasks="$work/tasks";:>"$tasks";while IFS="$TAB" read -r ip _;do while read -r p;do r=1;while [ "$r" -le "$TEST_ROUNDS" ];do printf '%s %s\n' "$ip" "$p">>"$tasks";r=$((r+1));done;done<"$samples";done<"$candidates";results="$work/results";run_tasks "$tasks" "$results"
- header "$report" testable - "$uid" "$name" "$raw" "$hash" "$target" "$pcsv";printf 'ip\teligible\tsuccess\ttotal\tsuccess_rate\taverage_ms\tfailed_ports\tsources\n'>>"$report"
- awk -F '\t' 'FNR==NR{s[$1]=$2;ip[++n]=$1;next}{t[$1]++;o[$1]+=$3;d[$1]+=$4;if(!$3)f[$1,$2]=1}END{for(i=1;i<=n;i++){x=ip[i];q="";for(k in f){split(k,p,SUBSEP);if(p[1]==x)q=q (q?",":"") p[2]}printf "%s\t%s\t%d\t%d\t%.1f%%\t%.3f\t%s\t%s\n",x,(o[x]==t[x]&&t[x]?"yes":"no"),o[x],t[x],t[x]?100*o[x]/t[x]:0,t[x]?d[x]/t[x]:0,q?q:"-",s[x]}}' "$candidates" "$results"|sort -t "$TAB" -k2,2r -k6,6n>>"$report";publish "$report"
- log '检测完成：';awk -F '\t' '$1~/^([0-9]+\.){3}[0-9]+$/{printf "  %s  可用=%s  成功=%s/%s（%s） 平均=%sms  失败端口=%s\n",$1,$2,$3,$4,$5,$6,$7}' "$report"
- recommended=$(awk -F '\t' '$2=="yes"{print $1;exit}' "$report");if [ -n "$recommended" ];then log "推荐 IP：$recommended";alternatives=$(awk -F '\t' -v x="$recommended" '$2=="yes"&&$1!=x{printf "%s%s",s,$1;s=", "}' "$report");log "可用备选 IP：${alternatives:-无}";else log '推荐 IP：无（没有候选地址通过全部测试）';fi;unavailable=$(awk -F '\t' '$2=="no"{printf "%s%s",s,$1;s=", "}' "$report");log "不可用 IP：${unavailable:-无}";log "报告：$report"
+ header "$report" testable - "$uid" "$name" "$raw" "$hash" "$target" "$pcsv"
+ printf '# source_scope\t仅记录本轮实际返回该 IP 的查询对象；本地 DNS 的具体命中上游未记录\n'>>"$report"
+ if [ -s "$candidates.sources" ];then source_labels 1 config <"$candidates.sources"|awk -F '\t' '{printf "# dns_config\t%s\t%s\n",$1,$2}'>>"$report";fi
+ printf 'ip\teligible\tsuccess\ttotal\tsuccess_rate\taverage_ms\tfailed_ports\tsources\tsource_labels\n'>>"$report"
+ awk -F '\t' 'FNR==NR{s[$1]=$2;ip[++n]=$1;next}{t[$1]++;o[$1]+=$3;d[$1]+=$4;if(!$3)f[$1,$2]=1}END{for(i=1;i<=n;i++){x=ip[i];q="";for(k in f){split(k,p,SUBSEP);if(p[1]==x)q=q (q?",":"") p[2]}printf "%s\t%s\t%d\t%d\t%.1f%%\t%.3f\t%s\t%s\n",x,(o[x]==t[x]&&t[x]?"yes":"no"),o[x],t[x],t[x]?100*o[x]/t[x]:0,t[x]?d[x]/t[x]:0,q?q:"-",s[x]}}' "$candidates" "$results"|sort -t "$TAB" -k2,2r -k6,6n|source_labels 8 >>"$report";publish "$report"
+ log '检测完成：';source_labels 8 brief <"$report"|awk -F '\t' '$1~/^([0-9]+\.){3}[0-9]+$/{printf "  %s  可用=%s  成功=%s/%s（%s） 平均=%sms  失败端口=%s\n    订阅来源：%s\n",$1,$2,$3,$4,$5,$6,$7,$(NF-2);if($(NF-1)!="")printf "    Clash 本地 DNS：%s\n",$(NF-1);if($NF!="")printf "    其他来源：%s\n",$NF}'
+ recommended=$(awk -F '\t' '$2=="yes"{print $1;exit}' "$report")
+ if [ -n "$recommended" ];then
+  source_labels 8 brief <"$report"|awk -F '\t' -v x="$recommended" '$1==x{printf "推荐 IP：%s\n  订阅来源：%s\n",$1,$(NF-2);if($(NF-1)!="")printf "  Clash 本地 DNS：%s\n",$(NF-1);if($NF!="")printf "  其他来源：%s\n",$NF}'
+  alternatives=$(source_labels 8 brief <"$report"|awk -F '\t' -v x="$recommended" '$2=="yes"&&$1!=x{printf "  %s\n    订阅来源：%s\n",$1,$(NF-2);if($(NF-1)!="")printf "    Clash 本地 DNS：%s\n",$(NF-1);if($NF!="")printf "    其他来源：%s\n",$NF}')
+  if [ -n "$alternatives" ];then log '可用备选 IP：';log "$alternatives";else log '可用备选 IP：无';fi
+ else
+  log '推荐 IP：无（没有候选地址通过全部测试）'
+ fi
+ unavailable=$(awk -F '\t' '$2=="no"{printf "%s%s",s,$1;s=", "}' "$report");log "不可用 IP：${unavailable:-无}";log "报告：$report"
 }
 
 rv(){ awk -F '\t' -v k="$1" '$1==k{print $2;exit}' "$LATEST_REPORT"; }

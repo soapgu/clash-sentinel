@@ -258,6 +258,36 @@ printf '%s' "\${CLASH_TEST_HTTP_STATUS:-200}"
     });
   });
 
+  test('唯一 IPv4 仍执行端口检测，并按检测结果决定是否可应用', async () => {
+    const setup = await fixture();
+    await executable(
+      join(setup.binDir, 'dig'),
+      "#!/usr/bin/env bash\nprintf '198.51.100.20\\n'\n",
+    );
+    const failed = await setup.adapter({ CLASH_TEST_ALL_FAIL: '1' }).diagnose();
+    expect(failed.status).toBe('testable');
+    expect(failed.recommendedIp).toBeNull();
+    expect(failed.candidates).toMatchObject([
+      { ip: '198.51.100.20', eligible: false, success: 0, total: 4 },
+    ]);
+    await expectCode(
+      setup.adapter().applyIp('198.51.100.20'),
+      'INVALID_CANDIDATE',
+    );
+
+    const passed = await setup.adapter().diagnose();
+    expect(passed.recommendedIp).toBe('198.51.100.20');
+    expect(passed.candidates).toMatchObject([
+      { ip: '198.51.100.20', eligible: true, success: 4, total: 4 },
+    ]);
+    expect(passed.candidates[0]?.sourceLabels).toContain('系统 DNS 查询');
+    await expect(
+      setup.adapter().applyIp('198.51.100.20'),
+    ).resolves.toMatchObject({
+      status: 'applied',
+    });
+  });
+
   test('稳定映射跳过、无候选、过期报告、订阅和应用错误', async () => {
     const setup = await fixture();
     await writeFile(

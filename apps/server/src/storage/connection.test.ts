@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { describe, expect, test } from 'vitest';
 import { migrations, runMigrations, type Migration } from './migrations.js';
+import { DiagnosisRepository } from './diagnosis-repository.js';
 import { SqliteStore } from './store.js';
 import { createStore } from '../../test-support/storage.js';
 
@@ -18,14 +19,59 @@ describe('SQLite 迁移', () => {
       { version: 1, name: 'initial_schema' },
       { version: 2, name: 'task_recovery_status' },
       { version: 3, name: 'health_status_detail' },
+      { version: 4, name: 'diagnosis_source_labels' },
     ]);
     database.close();
+  });
+
+  test('从旧结构迁移后保留原候选并可写入来源证据', () => {
+    const database = new Database(':memory:');
+    try {
+      runMigrations(
+        database,
+        migrations.filter(({ version }) => version <= 3),
+      );
+      database.exec(`
+        INSERT INTO diagnosis_snapshot (
+          singleton_id, id, status, generated_at, saved_at, profile_uid,
+          profile_name, domain, tested_ports_json, test_rounds, recommended_ip
+        ) VALUES (
+          1, '11111111-1111-4111-8111-111111111111', 'testable', 1, 1,
+          'main', '测试订阅', 'entry.example', '[443]', 1, '192.0.2.1'
+        );
+        INSERT INTO diagnosis_candidates (
+          diagnosis_id, ip, eligible, success, total, success_rate,
+          average_ms, failed_ports_json, sources_json
+        ) VALUES (
+          '11111111-1111-4111-8111-111111111111', '192.0.2.1', 1, 1, 1,
+          100, 20, '[]', '["system"]'
+        );
+      `);
+      runMigrations(database);
+      const repository = new DiagnosisRepository(database);
+      const previous = repository.getDiagnosis()!;
+      expect(previous.candidates[0]).toMatchObject({ sources: ['system'] });
+      expect(previous.candidates[0]).not.toHaveProperty('sourceLabels');
+      const sourceLabels = '系统 DNS 查询（应答服务器未记录）';
+      repository.replaceDiagnosis({
+        ...previous,
+        candidates: previous.candidates.map((candidate) => ({
+          ...candidate,
+          sourceLabels,
+        })),
+      });
+      expect(repository.getDiagnosis()?.candidates[0]?.sourceLabels).toBe(
+        sourceLabels,
+      );
+    } finally {
+      database.close();
+    }
   });
 
   test('故障迁移回滚其全部结构和版本记录', () => {
     const database = new Database(':memory:');
     const failing: Migration = {
-      version: 4,
+      version: 5,
       name: 'failing_test',
       up(db) {
         db.exec('CREATE TABLE must_rollback (id INTEGER PRIMARY KEY)');
@@ -44,7 +90,7 @@ describe('SQLite 迁移', () => {
       database
         .prepare('SELECT version FROM schema_migrations ORDER BY version')
         .all(),
-    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
     database.close();
   });
 

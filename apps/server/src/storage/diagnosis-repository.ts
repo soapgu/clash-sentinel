@@ -50,6 +50,9 @@ export class DiagnosisRepository {
         averageMs: candidate.average_ms,
         failedPorts: JSON.parse(String(candidate.failed_ports_json)),
         sources: JSON.parse(String(candidate.sources_json)),
+        ...(typeof candidate.source_labels === 'string'
+          ? { sourceLabels: candidate.source_labels }
+          : {}),
       })),
     });
   }
@@ -103,8 +106,8 @@ export class DiagnosisRepository {
       const insertCandidate = this.database.prepare(`
         INSERT INTO diagnosis_candidates (
           diagnosis_id, ip, eligible, success, total, success_rate, average_ms,
-          failed_ports_json, sources_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          failed_ports_json, sources_json, source_labels
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const candidate of value.candidates)
         insertCandidate.run(
@@ -117,6 +120,7 @@ export class DiagnosisRepository {
           candidate.averageMs,
           JSON.stringify(candidate.failedPorts),
           JSON.stringify(candidate.sources),
+          candidate.sourceLabels ?? null,
         );
     })();
     return this.getDiagnosis()!;

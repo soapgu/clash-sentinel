@@ -82,6 +82,46 @@ test('完整快照展示入口、六站、候选和官方服务状态', async ({
   await expect(page.getByText('严格诊断完成')).toBeVisible();
 });
 
+test('候选显示来源摘要，展开后可查看实际应答端点', async ({ page }) => {
+  const fixture = structuredClone(fixtures.candidates) as {
+    data: {
+      diagnosis: {
+        candidates: { ip: string; sources: string[]; sourceLabels?: string }[];
+      };
+    };
+  };
+  const candidate = fixture.data.diagnosis.candidates.find(
+    ({ ip }) => ip === '198.51.100.18',
+  )!;
+  candidate.sources = [
+    'runtime:nameserver:1:https@dns.example:443~abcd',
+    'subscription:nameserver:2:https@dns.example:443~abcd',
+    'mihomo-dns:udp:local@127.0.0.1:7874~efab',
+    'authority:ns1.example',
+    'authority:ns2.example',
+  ];
+  candidate.sourceLabels =
+    '订阅 DoH #2 直接响应（dns.example:443；运行配置同址）、Clash 本地 DNS 返回（127.0.0.1:7874；实际命中上游未知）';
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockDashboardSnapshots(page, { candidates: fixture });
+  await page.goto('/');
+  const card = page.locator('.candidate').filter({
+    has: page.getByText(candidate.ip, { exact: true }),
+  });
+  await expect(card.getByText('订阅来源 · DNS #2 返回过此 IP')).toBeVisible();
+  await expect(
+    card.getByText('Clash 本地 DNS 返回过此 IP（具体上游未知）'),
+  ).toBeVisible();
+  await expect(card.getByText('其他来源 · 权威 DNS（2 个）')).toBeVisible();
+  const evidence = card.getByText(candidate.sourceLabels);
+  await expect(evidence).toBeHidden();
+  await card.getByText('来源详情').click();
+  await expect(evidence).toBeVisible();
+  await card.getByText('来源详情').click();
+  await expect(evidence).toBeHidden();
+  await expect(page.locator('.candidate details')).toHaveCount(1);
+});
+
 test('首次加载与空快照使用独立状态且不会触发检测', async ({ page }) => {
   let releaseStatus!: () => void;
   const statusGate = new Promise<void>((resolve) => {

@@ -109,6 +109,9 @@ GitHub Actions 在 push 和 pull request 时使用 macOS runner 执行上述检�
 
 通过仅限本机访问的 Web 页面查看连接状态、候选 IP 和事件记录，并执行立即检测、重新诊断、手动切换、解除锁定及回滚等操作。
 
+严格诊断从当前订阅和运行配置中的 UDP、TCP、DoH 上游及 Clash 本地 DNS 补充候选，
+只有一个 IPv4 时也会测试。候选卡片显示本轮查询的来源摘要，展开「来源详情」可查看实际应答端点。
+
 ## 首版边界
 
 - 支持 macOS 与 Clash Verge Rev / Mihomo。

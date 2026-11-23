@@ -273,7 +273,7 @@
   min-height: 72px;
   padding: 12px 13px;
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 16px;
   background: var(--surface-soft);
@@ -290,10 +290,21 @@
   flex-wrap: wrap;
   gap: 7px;
 }
-.candidate > div:first-child > span:last-child {
+.candidate-sources {
+  display: grid;
   flex-basis: 100%;
+  gap: 4px;
   color: var(--muted);
   font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+.candidate-sources summary {
+  width: fit-content;
+  color: var(--blue);
+  cursor: pointer;
+}
+.candidate-sources p {
+  margin: 4px 0 0;
 }
 .recommend-label {
   padding: 2px 6px;

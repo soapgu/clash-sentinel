@@ -253,7 +253,8 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
           "successRate": 100,
           "averageMs": 18.4,
           "failedPorts": [],
-          "sources": ["system", "public_dns"]
+          "sources": ["system", "subscription:nameserver:2:https@dns.example:443~abcdef123456"],
+          "sourceLabels": "系统 DNS 查询（应答服务器未记录）、订阅 DoH #2 直接响应（dns.example:443）"
         },
         {
           "ip": "198.51.100.21",
@@ -272,6 +273,8 @@ Legacy 后台执行错误不会改写已经返回的 `202`；稳定错误码和�
   }
 }
 ```
+
+候选的 `sourceLabels` 为可选中文应答证据。旧报告仍提供 `sources` 标签。
 
 诊断被跳过时仍保存完整诊断元数据，但没有候选和推荐 IP：
 

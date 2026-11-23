@@ -164,6 +164,7 @@ erDiagram
         REAL average_ms
         TEXT failed_ports_json
         TEXT sources_json
+        TEXT source_labels
     }
 
     TASKS {
@@ -251,6 +252,7 @@ SQLite 的 `TEXT` 用于保存少量数组和扩展对象：
 - `tested_ports_json`：诊断测试端口数组。
 - `failed_ports_json`：候选失败端口数组。
 - `sources_json`：候选来源数组。
+- `source_labels`：新版报告提供的中文应答证据，旧记录为空。
 - `input_json`、`result_json`：任务脱敏输入与结果。
 - `details_json`：事件脱敏详情。
 
@@ -400,7 +402,8 @@ SQLite：执行 NOT NULL、CHECK、主键、唯一键和外键约束
 | `success_rate` | `REAL` | 否 | `0..100` | 成功率百分比 |
 | `average_ms` | `REAL` | 否 | 非负 | 成功探测平均耗时，毫秒 |
 | `failed_ports_json` | `TEXT` | 否 | JSON 数组 | 未通过的端口 |
-| `sources_json` | `TEXT` | 否 | JSON 数组 | DNS 候选来源摘要 |
+| `sources_json` | `TEXT` | 否 | JSON 数组 | DNS 候选来源标签 |
+| `source_labels` | `TEXT` | 是 | 中文文本 | 单个候选的 DNS 应答证据 |
 
 联合主键 `(diagnosis_id, ip)` 防止同一次诊断重复保存同一个 IP。外键使用
 `ON DELETE CASCADE`，删除旧诊断时自动删除全部旧候选。
