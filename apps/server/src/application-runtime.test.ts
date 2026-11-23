@@ -20,9 +20,17 @@ test('完整生命周期：启动恢复、监听、请求、关闭且二次停�
     useValue: { port: 0, host: '127.0.0.1' },
   });
 
+  store.settings.updateSettings({
+    autoSwitchEnabled: true,
+    autoSwitchProfileUid: 'old-profile',
+  });
   const runtime = child.resolve(ApplicationRuntime);
   const server = await runtime.start();
   expect(server.listening).toBe(true);
+  expect(store.settings.getSettings()).toMatchObject({
+    autoSwitchEnabled: false,
+    autoSwitchProfileUid: null,
+  });
   const address = server.address();
   expect(typeof address === 'object' && address && address.port).toBeTruthy();
 

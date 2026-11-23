@@ -1,3 +1,4 @@
+import { isIpLockingEnabled } from '@clash-sentinel/shared';
 import type { Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { inject, injectable } from 'tsyringe';
@@ -57,6 +58,13 @@ export class ApplicationRuntime {
     this.loggerValue.info('storage:sqlite', 'runtime state recovered', {
       recoveredTasks,
     });
+
+    if (!isIpLockingEnabled()) {
+      const { autoSwitchEnabled, autoSwitchProfileUid } =
+        this.store.settings.getSettings();
+      if (autoSwitchEnabled || autoSwitchProfileUid !== null)
+        this.autoSwitch.handleInvalidContext();
+    }
 
     // 状态命令只读；本机 Clash 暂不可用时仍提供 Web 页面和诊断入口。
     try {

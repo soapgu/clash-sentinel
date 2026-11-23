@@ -1,3 +1,4 @@
+import { isIpLockingEnabled } from '@clash-sentinel/shared';
 import type { HealthSnapshot, Settings } from '@clash-sentinel/shared';
 import { formatTime, healthLabels, toneForHealth } from '../formatters.js';
 import type { DashboardAction } from '../model.js';
@@ -15,6 +16,20 @@ export function EntryCard({
   busy: boolean;
   onAction: (action: DashboardAction) => void;
 }) {
+  const lockingEnabled = isIpLockingEnabled();
+  const unlocked = !!snapshot?.profile && !snapshot.lock.locked;
+  let statusLabel = snapshot ? healthLabels[snapshot.status] : '尚无健康数据';
+  if (unlocked && snapshot.status === 'healthy')
+    statusLabel = '代理正常 · 未锁定';
+  if (
+    unlocked &&
+    snapshot.status === 'unknown' &&
+    snapshot.internetSuccess === null
+  )
+    statusLabel = '未锁定 · 待检测';
+  if (unlocked && snapshot.status === 'proxy_error' && !snapshot.statusDetail)
+    statusLabel = '代理检测失败';
+
   const cooldownUntil = snapshot?.autoSwitchCooldownUntil
     ? Date.parse(snapshot.autoSwitchCooldownUntil)
     : 0;
@@ -38,12 +53,7 @@ export function EntryCard({
           <span
             className={`status-pill ${offline ? 'neutral' : toneForHealth(snapshot?.status)}`}
           >
-            ●{' '}
-            {offline
-              ? '数据可能过期'
-              : snapshot
-                ? healthLabels[snapshot.status]
-                : '尚无健康数据'}
+            ● {offline ? '数据可能过期' : statusLabel}
           </span>
         </div>
         {snapshot?.statusDetail === 'controller_auth_failed' ? (
@@ -62,24 +72,26 @@ export function EntryCard({
             <span>锁定 IP</span>
             <strong>{snapshot?.lock.locked ? snapshot.lock.ip : '—'}</strong>
           </div>
-          <div>
-            <span>连续失败</span>
-            <strong>
-              {snapshot
-                ? `${snapshot.consecutiveFailures} / ${settings?.entryFailureThreshold ?? '—'}`
-                : '—'}
-            </strong>
-          </div>
-          <div>
-            <span>自动切换</span>
-            <strong>
-              {settings?.autoSwitchEnabled
-                ? cooldownSeconds > 0
-                  ? `冷却 ${Math.floor(cooldownSeconds / 60)}:${String(cooldownSeconds % 60).padStart(2, '0')}`
-                  : '已开启'
-                : '已关闭'}
-            </strong>
-          </div>
+          {snapshot?.lock.locked && (
+            <div>
+              <span>连续失败</span>
+              <strong>
+                {`${snapshot.consecutiveFailures} / ${settings?.entryFailureThreshold ?? '—'}`}
+              </strong>
+            </div>
+          )}
+          {lockingEnabled && (
+            <div>
+              <span>自动切换</span>
+              <strong>
+                {settings?.autoSwitchEnabled
+                  ? cooldownSeconds > 0
+                    ? `冷却 ${Math.floor(cooldownSeconds / 60)}:${String(cooldownSeconds % 60).padStart(2, '0')}`
+                    : '已开启'
+                  : '已关闭'}
+              </strong>
+            </div>
+          )}
           <div>
             <span>状态更新</span>
             <strong>{formatTime(snapshot?.updatedAt)}</strong>
@@ -108,13 +120,15 @@ export function EntryCard({
         >
           解除锁定
         </button>
-        <button
-          className="button ghost"
-          disabled={busy || offline}
-          onClick={() => onAction('rollback')}
-        >
-          回滚变更
-        </button>
+        {lockingEnabled && (
+          <button
+            className="button ghost"
+            disabled={busy || offline}
+            onClick={() => onAction('rollback')}
+          >
+            回滚变更
+          </button>
+        )}
         <small>{busy ? '已有任务正在执行' : '高风险操作需要确认'}</small>
       </div>
     </section>

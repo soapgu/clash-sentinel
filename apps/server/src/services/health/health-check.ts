@@ -1,3 +1,4 @@
+import { isIpLockingEnabled } from '@clash-sentinel/shared';
 import type {
   HealthCheckResult,
   HealthSnapshot,
@@ -312,7 +313,11 @@ export class HealthCheckService {
     changes: HealthCheckChanges,
   ): AutoSwitchRequest | null {
     const settings = this.settings.getSettings();
-    if (!canAutoSwitch(settings, snapshot, this.now().getTime())) return null;
+    if (
+      !isIpLockingEnabled() ||
+      !canAutoSwitch(settings, snapshot, this.now().getTime())
+    )
+      return null;
     return {
       currentIp: snapshot.lock.ip,
       profileUid: snapshot.profile.uid,
@@ -386,6 +391,7 @@ export class HealthCheckService {
     status: LegacyStatus | null,
     directSuccess: number,
   ): HealthSnapshot {
+    const unlocked = status?.lock.locked === false;
     return {
       status:
         directSuccess === 0
@@ -397,9 +403,11 @@ export class HealthCheckService {
       lock: status?.lock ?? previous?.lock ?? { locked: false },
       internetSuccess: directSuccess,
       internetTotal: 3,
-      consecutiveFailures: previous?.consecutiveFailures ?? 0,
-      recommendedIp: previous?.recommendedIp ?? null,
-      autoSwitchCooldownUntil: previous?.autoSwitchCooldownUntil ?? null,
+      consecutiveFailures: unlocked ? 0 : (previous?.consecutiveFailures ?? 0),
+      recommendedIp: unlocked ? null : (previous?.recommendedIp ?? null),
+      autoSwitchCooldownUntil: unlocked
+        ? null
+        : (previous?.autoSwitchCooldownUntil ?? null),
       updatedAt: this.now().toISOString(),
     };
   }
@@ -414,12 +422,18 @@ export class HealthCheckService {
     if (snapshot.internetSuccess === 1) return 'internet_uncertain';
     if (['entry_down', 'entry_suspected'].includes(snapshot.status))
       return snapshot.status;
+    if (!status) return 'unknown';
+    if (status.controllerAvailable === false) return 'proxy_error';
+    if (!status.lock.locked)
+      return proxyResults.some((item) => item.reachable)
+        ? 'healthy'
+        : 'proxy_error';
+
     const proxyUnavailable = proxyResults.every(
       (item) => !item.reachable && item.errorType === 'proxy',
     );
-    if (status?.controllerAvailable === false || proxyUnavailable)
-      return 'proxy_error';
-    if (status?.lock.locked && snapshot.status === 'healthy') return 'healthy';
+    if (proxyUnavailable) return 'proxy_error';
+    if (snapshot.status === 'healthy') return 'healthy';
     return 'unknown';
   }
 

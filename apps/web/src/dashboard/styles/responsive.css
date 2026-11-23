@@ -100,6 +100,9 @@
   .candidate {
     grid-template-columns: minmax(0, 1fr) auto;
   }
+  .candidate-readonly {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .candidate-stats {
     grid-column: 1 / -1;
     grid-row: 2;

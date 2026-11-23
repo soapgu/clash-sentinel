@@ -1,5 +1,10 @@
 import { z } from 'zod';
 
+/** 同时控制 Web 和服务端的入口 IP 锁定操作。 */
+export function isIpLockingEnabled(): boolean {
+  return false;
+}
+
 /** 设置持久化和 API 更新共同使用的可编辑字段定义。 */
 const settingsEditableShape = {
   checkIntervalMs: z.number().int().min(1_000).max(86_400_000),

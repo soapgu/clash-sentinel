@@ -124,7 +124,7 @@
 .entry-details {
   margin-top: 26px;
   display: grid;
-  grid-template-columns: repeat(5, minmax(105px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
   gap: 18px;
 }
 .entry-details > div {
@@ -279,6 +279,9 @@
   background: var(--surface-soft);
   border: 1px solid var(--border);
   border-radius: 10px;
+}
+.candidate-readonly {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 .candidate.recommended {
   background: #f4f8ff;

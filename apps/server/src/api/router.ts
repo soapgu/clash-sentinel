@@ -8,6 +8,7 @@ import {
   eventsQuerySchema,
   eventsResponseSchema,
   healthResponseSchema,
+  isIpLockingEnabled,
   monitoringResponseSchema,
   settingsResponseSchema,
   settingsUpdateSchema,
@@ -31,6 +32,11 @@ import type { TaskEngine } from '../services/tasks/task-engine.js';
 import type { StatusNotificationCenter } from '../services/status-notifier.js';
 import { ApiError } from './errors.js';
 import { noopLogger, type AppLogger } from '../logging.js';
+
+function requireIpLockingEnabled() {
+  if (!isIpLockingEnabled())
+    throw new ApiError(409, 'IP_LOCKING_PAUSED', '入口 IP 锁定操作已暂停');
+}
 
 /** API 路由访问持久化数据和异步任务服务所需的依赖。 */
 export interface ApiRouterOptions {
@@ -210,6 +216,7 @@ export function createApiRouter(options: ApiRouterOptions) {
         ? input
         : { ...input, autoSwitchProfileUid: null };
       if (normalized.autoSwitchEnabled) {
+        requireIpLockingEnabled();
         if (taskEngine.hasActiveOperation())
           throw new ApiError(409, 'ACTION_CONFLICT', '已有操作正在执行', {
             ...taskEngine.getConflictDetails(),
@@ -258,6 +265,7 @@ export function createApiRouter(options: ApiRouterOptions) {
   const enqueueEmpty =
     (type: 'health_check' | 'diagnose' | 'reset' | 'rollback') =>
     (ctx: Context) => {
+      if (type === 'rollback') requireIpLockingEnabled();
       parseRequest(emptyActionRequestSchema, requestBody(ctx));
       const task = taskEngine.enqueue(type, null, {
         requestId: String(ctx.state.requestId),
@@ -274,6 +282,7 @@ export function createApiRouter(options: ApiRouterOptions) {
   router.post('/api/actions/reset', enqueueEmpty('reset'));
   router.post('/api/actions/rollback', enqueueEmpty('rollback'));
   router.post('/api/actions/apply', (ctx) => {
+    requireIpLockingEnabled();
     const input = parseRequest(applyActionRequestSchema, requestBody(ctx));
     const diagnosis = store.diagnoses.getDiagnosis();
     if (!diagnosis)

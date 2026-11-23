@@ -33,6 +33,13 @@ import {
   type LogScope,
 } from './logging.js';
 
+const locking = vi.hoisted(() => ({ enabled: true }));
+
+vi.mock('@clash-sentinel/shared', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@clash-sentinel/shared')>()),
+  isIpLockingEnabled: () => locking.enabled,
+}));
+
 interface RecordedLog {
   level: LogLevel;
   scope: LogScope;
@@ -64,6 +71,7 @@ const setups: Array<{
 }> = [];
 
 afterEach(async () => {
+  locking.enabled = true;
   for (const setup of setups.splice(0)) {
     setup.taskEngine.stopAccepting();
     await setup.taskEngine.waitForIdle();
@@ -603,6 +611,54 @@ test('访问、设置和异步任务使用统一日志等级及关联键', async
       }),
     ]),
   );
+});
+
+test('锁定暂停时拒绝所有锁定入口，保留检测、诊断和解除锁定', async () => {
+  locking.enabled = false;
+  const setup = await createSetup({
+    getStatus: vi.fn(async () => ({
+      ...legacyStatus(),
+      lock: { locked: false as const },
+    })),
+  });
+  const api = request(setup.app.callback());
+  for (const [action, body] of [
+    ['apply', { ip: '198.51.100.20' }],
+    ['rollback', {}],
+  ] as const) {
+    const response = await api
+      .post(`/api/actions/${action}`)
+      .send(body)
+      .expect(409);
+    expect(response.body.error.code).toBe('IP_LOCKING_PAUSED');
+  }
+  const { updatedAt: _updatedAt, ...settings } =
+    setup.store.settings.getSettings();
+  const response = await api
+    .put('/api/settings')
+    .send({
+      ...settings,
+      autoSwitchEnabled: true,
+      autoSwitchProfileUid: 'profile-main',
+    })
+    .expect(409);
+  expect(response.body.error.code).toBe('IP_LOCKING_PAUSED');
+  expect(setup.store.settings.getSettings().autoSwitchEnabled).toBe(false);
+  for (const action of ['health-check', 'diagnose', 'reset']) {
+    const accepted = await api
+      .post(`/api/actions/${action}`)
+      .send({})
+      .expect(202);
+    await setup.taskEngine.waitForIdle();
+    expect(setup.store.tasks.getTask(accepted.body.data.taskId)?.status).toBe(
+      'succeeded',
+    );
+  }
+  expect(setup.store.health.getHealthSnapshot()).toMatchObject({
+    status: 'unknown',
+    lock: { locked: false },
+    internetSuccess: null,
+  });
 });
 
 test('设置完整更新并校验自动切换锁定和订阅', async () => {

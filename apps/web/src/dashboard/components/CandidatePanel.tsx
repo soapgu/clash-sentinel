@@ -1,3 +1,4 @@
+import { isIpLockingEnabled } from '@clash-sentinel/shared';
 import type {
   DiagnosisCandidate,
   StoredDiagnosis,
@@ -101,6 +102,7 @@ export function CandidatePanel({
   busy: boolean;
   onApply: (ip: string) => void;
 }) {
+  const lockingEnabled = isIpLockingEnabled();
   const fresh = isDiagnosisFresh(diagnosis ?? null, now) && !offline;
   const expiresAt = diagnosis
     ? new Date(
@@ -149,7 +151,7 @@ export function CandidatePanel({
               fresh && candidate.eligible && candidate.ip !== currentIp;
             return (
               <article
-                className={`candidate ${candidate.ip === diagnosis.recommendedIp ? 'recommended' : ''}`}
+                className={`candidate ${lockingEnabled ? '' : 'candidate-readonly'} ${candidate.ip === diagnosis.recommendedIp ? 'recommended' : ''}`}
                 key={candidate.ip}
               >
                 <div>
@@ -170,13 +172,15 @@ export function CandidatePanel({
                     {candidate.success} / {candidate.total}
                   </span>
                 </div>
-                <button
-                  className="button compact"
-                  disabled={!applicable || busy || offline}
-                  onClick={() => onApply(candidate.ip)}
-                >
-                  {candidate.ip === currentIp ? '当前 IP' : '应用'}
-                </button>
+                {lockingEnabled && (
+                  <button
+                    className="button compact"
+                    disabled={!applicable || busy || offline}
+                    onClick={() => onApply(candidate.ip)}
+                  >
+                    {candidate.ip === currentIp ? '当前 IP' : '应用'}
+                  </button>
+                )}
               </article>
             );
           })}

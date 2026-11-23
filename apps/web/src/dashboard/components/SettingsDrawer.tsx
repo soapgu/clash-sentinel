@@ -4,7 +4,10 @@ import type {
   Settings,
   SettingsUpdate,
 } from '@clash-sentinel/shared';
-import { settingsUpdateSchema } from '@clash-sentinel/shared';
+import {
+  isIpLockingEnabled,
+  settingsUpdateSchema,
+} from '@clash-sentinel/shared';
 import { settingsValidationMessage } from '../formatters.js';
 import { NumberField } from './NumberField.js';
 
@@ -66,6 +69,7 @@ export function SettingsDrawer({
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [onClose, open]);
+  const lockingEnabled = isIpLockingEnabled();
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     if (!settings) return;
@@ -75,8 +79,10 @@ export function SettingsDrawer({
       entryFailureThreshold: Number(draft.entryFailureThreshold),
       autoSwitchCooldownMs: Number(draft.cooldownMinutes) * 60_000,
       monitoringEnabled: draft.monitoringEnabled,
-      autoSwitchEnabled: settings.autoSwitchEnabled,
-      autoSwitchProfileUid: settings.autoSwitchProfileUid,
+      autoSwitchEnabled: lockingEnabled && settings.autoSwitchEnabled,
+      autoSwitchProfileUid: lockingEnabled
+        ? settings.autoSwitchProfileUid
+        : null,
     });
     if (!parsed.success) {
       setValidationError(
@@ -174,42 +180,46 @@ export function SettingsDrawer({
                 setDraft((item) => ({ ...item, entryFailureThreshold: value }))
               }
             />
-            <NumberField
-              label="自动切换冷却"
-              unit="分钟"
-              min="0"
-              max="1440"
-              value={draft.cooldownMinutes}
-              disabled={busy || saving}
-              onChange={(value) =>
-                setDraft((item) => ({ ...item, cooldownMinutes: value }))
-              }
-            />
-            <label className="toggle-row emphasized">
-              <span>自动切换入口 IP</span>
-              <input
-                type="checkbox"
-                aria-label="自动切换"
-                checked={settings.autoSwitchEnabled}
-                disabled={
-                  saving ||
-                  autoSaving ||
-                  offline ||
-                  (!settings.autoSwitchEnabled &&
-                    (busy || !snapshot?.lock.locked || !snapshot.profile))
-                }
-                onChange={(event) => onAutoChange(event.target.checked)}
-              />
-            </label>
-            <p className="setting-hint">
-              {!snapshot?.lock.locked
-                ? '请先诊断并确认锁定当前订阅。'
-                : '仅在互联网正常、入口达到失败阈值且冷却结束后执行。'}
-            </p>
-            <div className="setting-row readonly">
-              <span>绑定订阅 UID</span>
-              <strong>{settings.autoSwitchProfileUid ?? '未绑定'}</strong>
-            </div>
+            {lockingEnabled && (
+              <>
+                <NumberField
+                  label="自动切换冷却"
+                  unit="分钟"
+                  min="0"
+                  max="1440"
+                  value={draft.cooldownMinutes}
+                  disabled={busy || saving}
+                  onChange={(value) =>
+                    setDraft((item) => ({ ...item, cooldownMinutes: value }))
+                  }
+                />
+                <label className="toggle-row emphasized">
+                  <span>自动切换入口 IP</span>
+                  <input
+                    type="checkbox"
+                    aria-label="自动切换"
+                    checked={settings.autoSwitchEnabled}
+                    disabled={
+                      saving ||
+                      autoSaving ||
+                      offline ||
+                      (!settings.autoSwitchEnabled &&
+                        (busy || !snapshot?.lock.locked || !snapshot.profile))
+                    }
+                    onChange={(event) => onAutoChange(event.target.checked)}
+                  />
+                </label>
+                <p className="setting-hint">
+                  {!snapshot?.lock.locked
+                    ? '请先诊断并确认锁定当前订阅。'
+                    : '仅在互联网正常、入口达到失败阈值且冷却结束后执行。'}
+                </p>
+                <div className="setting-row readonly">
+                  <span>绑定订阅 UID</span>
+                  <strong>{settings.autoSwitchProfileUid ?? '未绑定'}</strong>
+                </div>
+              </>
+            )}
             {validationError || saveError ? (
               <p className="form-error" role="alert">
                 {validationError ?? saveError}

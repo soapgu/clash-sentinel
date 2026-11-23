@@ -280,29 +280,22 @@ test('刷新、手动任务和监测设置形成操作闭环', async ({ page }) 
   });
 });
 
-test('高风险操作展示真实上下文且 Escape 返回触发按钮焦点', async ({ page }) => {
-  const candidateFixture = structuredClone(fixtures.candidates) as {
-    data: { diagnosis: { savedAt: string } };
-  };
-  candidateFixture.data.diagnosis.savedAt = new Date().toISOString();
-  await mockDashboardSnapshots(page, { candidates: candidateFixture });
+test('锁定操作已隐藏，解除锁定保留确认和焦点恢复', async ({ page }) => {
+  await mockDashboardSnapshots(page);
   await page.goto('/');
-  const candidate = page.locator('article').filter({
-    has: page.getByText('198.51.100.18', { exact: true }),
-  });
-  const apply = candidate.getByRole('button', { name: '应用' });
-  await apply.click();
+  await expect(page.getByText('198.51.100.18', { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: '应用', exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '回滚变更' })).toHaveCount(0);
+  const reset = page.getByRole('button', { name: '解除锁定' });
+  await reset.click();
   const dialog = page.getByRole('dialog');
-  await expect(dialog).toContainText('演示订阅 A');
   await expect(dialog).toContainText('entry.example.com');
   await expect(dialog).toContainText('192.0.2.42');
-  await expect(dialog).toContainText('198.51.100.18');
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
-  await expect(apply).toBeFocused();
-
-  await page.getByRole('button', { name: '回滚变更' }).click();
-  await expect(page.getByRole('dialog')).toContainText('复核最近备份');
+  await expect(reset).toBeFocused();
 });
 
 test('配置任务恢复失败在刷新后持续提示人工处理', async ({ page }) => {
@@ -343,50 +336,39 @@ test('配置任务恢复失败在刷新后持续提示人工处理', async ({ pa
   await expect(page.getByRole('heading', { name: '需人工处理' })).toBeVisible();
 });
 
-test('自动切换独立确认且不会夹带未保存的普通设置', async ({ page }) => {
-  await mockDashboardSnapshots(page);
-  const updates: Array<Record<string, unknown>> = [];
-  await page.route('**/api/settings', async (route) => {
-    if (route.request().method() !== 'PUT') {
-      await route.fallback();
-      return;
-    }
-    const value = route.request().postDataJSON() as Record<string, unknown>;
-    updates.push(value);
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        ok: true,
-        data: {
-          settings: { ...value, updatedAt: '2026-09-11T04:00:00.000Z' },
-        },
-      }),
+for (const scenario of [
+  { status: 'healthy', internetSuccess: 3, label: '代理正常 · 未锁定' },
+  { status: 'unknown', internetSuccess: null, label: '未锁定 · 待检测' },
+  { status: 'proxy_error', internetSuccess: 3, label: '代理检测失败' },
+]) {
+  test(`未锁定入口显示「${scenario.label}」且仍可检测和诊断`, async ({
+    page,
+  }) => {
+    const status = structuredClone(fixtures.status) as {
+      data: { snapshot: Record<string, unknown> };
+    };
+    Object.assign(status.data.snapshot, {
+      status: scenario.status,
+      internetSuccess: scenario.internetSuccess,
+      internetTotal: scenario.internetSuccess === null ? null : 3,
+      lock: { locked: false },
+      consecutiveFailures: 8,
     });
+    await mockDashboardSnapshots(page, { status });
+    await page.goto('/');
+    await expect(page.getByText(scenario.label)).toBeVisible();
+    await expect(page.getByText('8 / 3')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '立即检测' })).toBeEnabled();
+    await expect(page.getByRole('button', { name: '重新诊断' })).toBeEnabled();
+    await expect(page.getByRole('button', { name: '解除锁定' })).toBeDisabled();
+    await page.getByRole('button', { name: '打开设置' }).click();
+    await expect(page.getByRole('heading', { name: '监测设置' })).toBeVisible();
+    await expect(page.getByRole('checkbox', { name: '自动切换' })).toHaveCount(
+      0,
+    );
+    await expect(page.getByLabel('自动切换冷却')).toHaveCount(0);
   });
-  await page.goto('/');
-  await page.getByRole('button', { name: '打开设置' }).click();
-  await page.getByLabel('检测间隔').fill('120');
-  await page.getByRole('checkbox', { name: '自动切换' }).click();
-  const dialog = page.getByRole('dialog');
-  await expect(dialog).toContainText('演示订阅 A');
-  await expect(dialog).toContainText('连续失败 3 次');
-  await dialog.getByRole('button', { name: '启用自动切换' }).click();
-  await expect(page.getByLabel('检测间隔')).toHaveValue('120');
-  expect(updates[0]).toMatchObject({
-    checkIntervalMs: 60_000,
-    autoSwitchEnabled: true,
-    autoSwitchProfileUid: 'demo-profile-a',
-  });
-  const autoSwitch = page.getByRole('checkbox', { name: '自动切换' });
-  await expect(autoSwitch).toBeChecked();
-  await expect(autoSwitch).toBeEnabled();
-  await autoSwitch.click();
-  expect(updates[1]).toMatchObject({
-    autoSwitchEnabled: false,
-    autoSwitchProfileUid: null,
-  });
-});
+}
 
 test('监测快照中的自动任务可在新页面恢复跟踪', async ({ page }) => {
   const taskId = '44444444-4444-4444-8444-444444444444';

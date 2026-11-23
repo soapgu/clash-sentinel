@@ -15,9 +15,17 @@ import { HealthCheckService } from './health-check.js';
 import type { HealthLegacyOperations } from './health-check.js';
 import type { SiteProbe, SiteProbeRequest } from './site-probe.js';
 
+const locking = vi.hoisted(() => ({ enabled: true }));
+
+vi.mock('@clash-sentinel/shared', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@clash-sentinel/shared')>()),
+  isIpLockingEnabled: () => locking.enabled,
+}));
+
 const cleanups: Array<{ root: string; store: SqliteStore }> = [];
 
 afterEach(async () => {
+  locking.enabled = true;
   for (const item of cleanups.splice(0)) {
     item.store.close();
     await rm(item.root, { recursive: true, force: true });
@@ -382,6 +390,102 @@ async function autoSwitchSetup() {
   value.legacy.healthCheck.mockClear();
   return value;
 }
+
+test.each(['manual', 'scheduled'] as const)(
+  '暂停锁定时 %s 检测仍诊断故障且不触发自动切换',
+  async (source) => {
+    locking.enabled = false;
+    const value = await autoSwitchSetup();
+    const execution = await value.service.run(source);
+    expect(execution.snapshot.status).toBe('entry_down');
+    expect(execution.autoSwitchRequest).toBeNull();
+    expect(value.legacy.diagnose).toHaveBeenCalledOnce();
+  },
+);
+
+test.each([
+  {
+    name: '代理可达',
+    reachable: true,
+    controller: true,
+    authFailed: false,
+    expected: 'healthy',
+    detail: null,
+  },
+  {
+    name: '代理全部探测失败',
+    reachable: false,
+    controller: true,
+    authFailed: false,
+    expected: 'proxy_error',
+    detail: null,
+  },
+  {
+    name: '控制接口认证失败',
+    reachable: true,
+    controller: false,
+    authFailed: true,
+    expected: 'proxy_error',
+    detail: 'controller_auth_failed',
+  },
+  {
+    name: '控制接口不可用',
+    reachable: true,
+    controller: false,
+    authFailed: false,
+    expected: 'proxy_error',
+    detail: null,
+  },
+])(
+  '未锁定且 $name 时保存实际状态并清空旧入口数据',
+  async ({ reachable, controller, authFailed, expected, detail }) => {
+    const value = await setup(
+      {
+        google: result('google', reachable),
+        github: result('github', false),
+        openai_status: result('openai_status', false),
+      },
+      {
+        lock: { locked: false },
+        controllerAvailable: controller,
+        controllerAuthFailed: authFailed,
+      },
+    );
+    value.store.health.upsertHealthSnapshot({
+      status: 'entry_down',
+      profile: { uid: 'profile-demo', name: '演示订阅' },
+      lock: { locked: true, domain: 'entry.example.test', ip: '198.51.100.20' },
+      internetSuccess: 3,
+      internetTotal: 3,
+      consecutiveFailures: 8,
+      recommendedIp: '198.51.100.21',
+      autoSwitchCooldownUntil: '2026-09-10T00:00:00.000Z',
+      updatedAt: '2026-09-09T04:00:00.000Z',
+    });
+    const { snapshot } = await value.service.run('manual');
+    expect(snapshot).toMatchObject({
+      status: expected,
+      statusDetail: detail,
+      lock: { locked: false },
+      consecutiveFailures: 0,
+      recommendedIp: null,
+      autoSwitchCooldownUntil: null,
+    });
+    expect(value.legacy.healthCheck).not.toHaveBeenCalled();
+    expect(value.legacy.diagnose).not.toHaveBeenCalled();
+    expect(value.store.sites.getSiteSnapshot('google')?.reachable).toBe(
+      reachable,
+    );
+  },
+);
+
+test('无法读取当前订阅时不根据站点探测推断入口状态', async () => {
+  const value = await setup();
+  value.legacy.getStatus.mockRejectedValueOnce(new Error('状态读取失败'));
+  const { snapshot } = await value.service.run('manual');
+  expect(snapshot).toMatchObject({ status: 'unknown', internetSuccess: 3 });
+  expect(value.legacy.healthCheck).not.toHaveBeenCalled();
+});
 
 test('首次入口故障返回可复用本轮诊断的自动切换请求', async () => {
   const value = await autoSwitchSetup();
